@@ -31,7 +31,7 @@ This project combines **strategic gameplay** with **true ownership** and **trans
 - 💰 **Rent & Tycoon Mechanics** — Earn passive income; upgrade for higher yields  
 - 🧾 **On-Chain Events** — Dice rolls, Chance, Community Chest, Tax, Jail  
 - 📊 **Interactive Dashboard** — Real-time board with rotatable cards (e.g., Income Tax $200, Luxury Tax $100)  
-- ⛽ **Gas Efficient** — Leverages Base, Stacks and Celo’s low fees  
+- ⛽ **Gas Efficient** — Leverages Polygon’s low fees  
 - 👛 **Wallet Integration** — MetaMask, WalletConnect ready  
 
 ---
@@ -50,8 +50,8 @@ This project combines **strategic gameplay** with **true ownership** and **trans
 | Layer      | Tools |
 |------------|------|
 | **Frontend** | React, Next.js, Tailwind CSS |
-| **Blockchain** | Solidity on Base, Stacks and Celo |
-| **Interactions** | ethers.js, Basescan celoscan|
+| **Blockchain** | Solidity on Polygon |
+| **Interactions** | ethers.js, Polyscan|
 | **UI Components** | Custom Monopoly board renderer |
 
 Visit: https://base-monopoly.vercel.app
