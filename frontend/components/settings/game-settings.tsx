@@ -34,7 +34,7 @@ import {
   useCreateGame,
   useApprove,
 } from "@/context/ContractProvider";
-import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS, MINIPAY_CHAIN_IDS } from "@/constants/contracts";
+import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS } from "@/constants/contracts";
 import { Address, parseUnits } from "viem";
 
 interface GameCreateResponse {
@@ -57,7 +57,7 @@ export default function GameSettings() {
   const { data: username } = useGetUsername(address);
   const { data: isUserRegistered, isLoading: isRegisteredLoading } = useIsRegistered(address);
 
-  const isMiniPay = MINIPAY_CHAIN_IDS.includes(wagmiChainId);
+  
   const chainName = caipNetwork?.name?.toLowerCase().replace(" ", "") || `chain-${wagmiChainId}` || "unknown";
 
   const [isFreeGame, setIsFreeGame] = useState(false);
@@ -178,7 +178,7 @@ export default function GameSettings() {
           stake: finalStake,           // ← important: send 0 when free
           starting_cash: settings.startingCash,
           is_ai: false,
-          is_minipay: isMiniPay,
+          is_minipay: false,
           chain: chainName,
           duration: settings.duration,
           use_usdc: !isFreeGame,       // no USDC if free

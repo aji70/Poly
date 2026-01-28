@@ -24,7 +24,7 @@ import { Game } from "@/lib/types/games";
 import { getPlayerSymbolData, PlayerSymbol, symbols } from "@/lib/types/symbol";
 import { ApiResponse } from "@/types/api";
 import Erc20Abi from '@/context/abi/ERC20abi.json';
-import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS, MINIPAY_CHAIN_IDS } from "@/constants/contracts";
+import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS } from "@/constants/contracts";
 import { Address } from "viem";
 import { toast } from "react-toastify";
 
