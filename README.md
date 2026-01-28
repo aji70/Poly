@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Tycoon** is an exciting blockchain-\ tycoon game inspired by the classic **Monopoly** board game, built on the **Base Stacks and Celo Network**.  
+**Tycoon** is an exciting blockchain-\ tycoon game inspired by the classic **Monopoly** board game, built on the **Polygon Network**.  
 Players can **buy, sell, and trade virtual properties as NFTs**, collect rent, build monopolies, and compete in a **decentralized on-chain economy**. 
 Now Available on Base and Stacks
 
@@ -16,13 +16,11 @@ This project combines **strategic gameplay** with **true ownership** and **trans
 
 | Detail          | Info |
 |-----------------|------|
-| **Contract Base Address** | `0xc6c2ccc0cA40d700DE2e5696f2a5e71dd838A1c4` |
-| **Contract Celo Address** | `0x7cd34f84Cf5c389C34FE9525b812A041e2299594` |
-| **Contract Stacks  Address** | `ST81CZF1YK81CPAMS6PRS3GJSKK35MGZ2VWEPSEN.tyc` |
-| **Network**     | Base | Celo | Stacks|
+| **Contract Polygon Address** | `0xf66db38B2Ad22376D75F5191a2c805489cb6EF4a` |
+| **Network**     | Polygon |
 | **Status**      | ✅ Deployed — Functionality under development |
-| **ERC20 Base Address** | `0x8A867F46f1A0e8bA1AF573E83B26F86Aa23e07D3` |
-| **ERC20 Celo Address** | `0x40C7c0c9277d8ACF7bCe32ed33e37865f5Ed3310` |
+| **ERC20 Polygon Address** | `0x7346750357c5b39d42D6beaaE918349E3D5c5381` |
+| **Reward Contract Address** | `0x34Af2D46E9a81D19c25eFC4706Edc63262764376` |
 
 
 ---
@@ -90,5 +88,5 @@ Support: Email or Discord (TBD)
 🛡 License
 MIT License — See LICENSE file.
 
-Built with ❤️ on Base
+Built with ❤️ on Polygon
 “Roll the dice. Build your empire.”
