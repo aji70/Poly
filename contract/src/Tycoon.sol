@@ -401,7 +401,7 @@ contract Tycoon is ReentrancyGuard, Ownable {
     event AIGameEnded(uint256 indexed gameId, address indexed player, uint64 timestamp);
 
     constructor(address initialOwner, address _rewardSystem) Ownable(initialOwner) {
-        require(_rewardSystem != address(0), "Invalid reward system");
+        // require(_rewardSystem != address(0), "Invalid reward system");
         rewardSystem = TycoonRewardSystem(payable(_rewardSystem));
     }
 
