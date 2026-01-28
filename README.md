@@ -54,7 +54,7 @@ This project combines **strategic gameplay** with **true ownership** and **trans
 | **Interactions** | ethers.js, Polyscan|
 | **UI Components** | Custom Monopoly board renderer |
 
-Visit: https://base-monopoly.vercel.app
+Visit: https://poly-iota.vercel.app/
 🗺 Roadmap
 
 ✅ Core Smart Contract Deployment
