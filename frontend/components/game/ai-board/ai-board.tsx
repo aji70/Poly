@@ -342,9 +342,9 @@ const BUY_PROPERTY = useCallback(async (isAiAction = false) => {
     showToast("Sending transaction...", "default");
 
     // 1. On-chain minimal proof (counters update) - skip if AI is involved
-    if (!isAiAction) {
-      await transferOwnership('', buyerUsername);
-    }
+    // if (!isAiAction) {
+    //   await transferOwnership('', buyerUsername);
+    // }
 
     // 2. Update backend
     await apiClient.post("/game-properties/buy", {
