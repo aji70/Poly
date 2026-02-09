@@ -57,7 +57,7 @@ export default function PlayWithAIMobile() {
   const { data: username } = useGetUsername(address);
   const { data: isUserRegistered, isLoading: isRegisteredLoading } = useIsRegistered(address);
 
-  
+  const isMiniPay = false;
   const chainName = caipNetwork?.name?.toLowerCase().replace(" ", "") || `chain-${caipNetwork?.id ?? "unknown"}`;
 
   const [settings, setSettings] = useState({
@@ -70,7 +70,7 @@ export default function PlayWithAIMobile() {
     mortgage: true,
     evenBuild: true,
     randomPlayOrder: true,
-    duration: 60, // minutes
+    duration: 0, // minutes
   });
 
   const contractAddress = TYCOON_CONTRACT_ADDRESSES[caipNetwork?.id as keyof typeof TYCOON_CONTRACT_ADDRESSES] as Address | undefined;
@@ -110,25 +110,25 @@ export default function PlayWithAIMobile() {
       let dbGameId: string | number | undefined;
       try {
         const saveRes: GameCreateResponse = await apiClient.post("/games", {
-          id: onChainGameId.toString(),
-          code: gameCode,
-          mode: "PRIVATE",
-          address: address,
-          symbol: settings.symbol,
-          number_of_players: totalPlayers,
-          ai_opponents: settings.aiCount,
-          ai_difficulty: settings.aiDifficulty,
-          starting_cash: settings.startingCash,
-          is_ai: true,
-          is_minipay: false,
+        id: onChainGameId,
+        code: gameCode,
+        mode: "PRIVATE",
+        address,
+        symbol: settings.symbol,
+        number_of_players: totalPlayers,
+        ai_opponents: settings.aiCount,
+        ai_difficulty: settings.aiDifficulty,
+         is_ai: true,
+          is_minipay: isMiniPay,
           chain: chainName,
           duration: settings.duration,
-          settings: {
-            auction: settings.auction,
-            rent_in_prison: settings.rentInPrison,
-            mortgage: settings.mortgage,
-            even_build: settings.evenBuild,
-            randomize_play_order: settings.randomPlayOrder,
+        settings: {
+          auction: settings.auction,
+          rent_in_prison: settings.rentInPrison,
+          mortgage: settings.mortgage,
+          even_build: settings.evenBuild,
+          starting_cash: settings.startingCash,
+          randomize_play_order: settings.randomPlayOrder,
           },
         });
 
