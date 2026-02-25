@@ -16,7 +16,7 @@ This project combines **strategic gameplay** with **true ownership** and **trans
 
 | Detail          | Info |
 |-----------------|------|
-| **Contract Polygon Address** | `0xf66db38B2Ad22376D75F5191a2c805489cb6EF4a` |
+| **Contract Polygon Address** | `0xFB6d09FAF0Baf2eb84959d4dCB3E5D4A93B3e644` |
 | **Network**     | Polygon |
 | **Status**      | ✅ Deployed — Functionality under development |
 | **ERC20 Polygon Address** | `0x7346750357c5b39d42D6beaaE918349E3D5c5381` |
