@@ -5,6 +5,8 @@ import {TycoonLib} from "./TycoonLib.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {ERC1155Burnable} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -384,10 +386,22 @@ contract Tycoon is ReentrancyGuard, Ownable {
     mapping(uint256 => mapping(address => TycoonLib.GamePlayer)) public gamePlayers;
     mapping(address => string) public previousGameCode;
     mapping(uint256 => mapping(address => uint256)) public claims; // rank or removal flag
+    /// @dev Turn count per player per game. Backend calls setTurnCount once when player reaches min turns (e.g. 20) for perks.
+    mapping(uint256 => mapping(address => uint256)) public turnsPlayed;
+
+    /// @dev Backend-registered users have a stored password hash; backend passes this when calling on their behalf.
+    mapping(address => bytes32) private _passwordHashOf;
+    /// @dev True if user registered themselves (msg.sender) or verified ownership via signature. Unverified get no win perks.
+    mapping(address => bool) public addressVerified;
 
     TycoonRewardSystem public immutable rewardSystem;
 
-    uint256 constant HOUSE_PERCENT = 5;
+    // Backend can remove stalling players / vote-out; separate from reward minter
+    address public backendGameController;
+
+    /// @dev Min turns required to get full perks on exit (USDC + collectible + TYC). 0 = disabled.
+    uint256 public minTurnsForPerks;
+
     uint256 constant CONSOLATION_VOUCHER = TOKEN_REWARD / 10; // 0.1 TYC
 
     event PlayerCreated(string indexed username, address indexed player, uint64 timestamp);
@@ -399,15 +413,39 @@ contract Tycoon is ReentrancyGuard, Ownable {
     event RewardClaimed(uint256 indexed gameId, address indexed player, uint256 amountUSDC);
     event HouseWithdrawn(uint256 amount, address indexed to);
     event AIGameEnded(uint256 indexed gameId, address indexed player, uint64 timestamp);
+    event BackendGameControllerUpdated(address indexed newController);
+    event PlayerRemovedByController(uint256 indexed gameId, address indexed player, address indexed removedBy);
+    event MinStakeUpdated(uint256 previousMinStake, uint256 newMinStake);
+    event PlayerLeftPendingGame(uint256 indexed gameId, address indexed player, uint256 stakeRefunded);
+    event TurnCountSet(uint256 indexed gameId, address indexed player, uint256 count);
+    event MinTurnsForPerksUpdated(uint256 previous, uint256 newMin);
+    event AddressVerified(address indexed player);
+    event PlayerRegisteredByBackend(string indexed username, address indexed player);
 
     constructor(address initialOwner, address _rewardSystem) Ownable(initialOwner) {
-        // require(_rewardSystem != address(0), "Invalid reward system");
+        require(_rewardSystem != address(0), "Invalid reward system");
         rewardSystem = TycoonRewardSystem(payable(_rewardSystem));
     }
 
-    modifier nonEmptyUsername(string memory username) {
-        require(bytes(username).length > 0, "Username empty");
-        _;
+    /// @param newController Pass address(0) to disable backend game controller.
+    function setBackendGameController(address newController) external onlyOwner {
+        backendGameController = newController;
+        emit BackendGameControllerUpdated(newController);
+    }
+
+    /// @notice Set minimum turns a player must have completed to receive full perks on exit. 0 = no minimum. Applies to both voluntary exit (uses turnsPlayed) and removePlayerFromGame (uses passed turnCount).
+    function setMinTurnsForPerks(uint256 newMin) external onlyOwner {
+        uint256 previous = minTurnsForPerks;
+        minTurnsForPerks = newMin;
+        emit MinTurnsForPerksUpdated(previous, newMin);
+    }
+
+    /// @notice Set a player's turn count for perk eligibility. Call once when they reach the threshold (e.g. 20). Only allows increasing.
+    function setTurnCount(uint256 gameId, address player, uint256 count) external onlyGameController {
+        require(gamePlayers[gameId][player].playerAddress != address(0), "Not in game");
+        require(count > turnsPlayed[gameId][player], "Can only increase");
+        turnsPlayed[gameId][player] = count;
+        emit TurnCountSet(gameId, player, count);
     }
 
     modifier onlyPlayerInGame(uint256 gameId, address player) {
@@ -415,7 +453,48 @@ contract Tycoon is ReentrancyGuard, Ownable {
         _;
     }
 
-    function registerPlayer(string memory username) external nonEmptyUsername(username) returns (uint256) {
+    modifier onlyGameController() {
+        require(
+            msg.sender == backendGameController || msg.sender == owner(),
+            "Not game controller"
+        );
+        _;
+    }
+
+    /// @dev Revert if not backend or password does not match stored hash for forPlayer.
+    function _requireBackendAuth(address forPlayer, bytes32 passwordHash) internal view {
+        require(
+            msg.sender == backendGameController || msg.sender == owner(),
+            "Not game controller"
+        );
+        require(forPlayer != address(0), "Zero address");
+        require(_passwordHashOf[forPlayer] != bytes32(0), "No password set");
+        require(_passwordHashOf[forPlayer] == passwordHash, "Wrong password");
+    }
+
+    /// @dev Resolve actor: by address or by username. One of forPlayer or forUsername must identify the account.
+    function _resolvePlayer(address forPlayer, string memory forUsername) internal view returns (address) {
+        if (forPlayer != address(0)) return forPlayer;
+        require(bytes(forUsername).length > 0, "Need address or username");
+        address a = users[forUsername].playerAddress;
+        require(a != address(0), "Username not registered");
+        return a;
+    }
+
+    /// @notice Verify ownership of this address (e.g. after backend registration). Sign message: "Tycoon verify: <your address>".
+    function verifyAddress(bytes calldata signature) external {
+        bytes32 messageHash = MessageHashUtils.toEthSignedMessageHash(
+            keccak256(abi.encodePacked("Tycoon verify: ", msg.sender))
+        );
+        address signer = ECDSA.recover(messageHash, signature);
+        require(signer == msg.sender, "Invalid signature");
+        require(!addressVerified[msg.sender], "Already verified");
+        addressVerified[msg.sender] = true;
+        emit AddressVerified(msg.sender);
+    }
+
+    function registerPlayer(string memory username) external returns (uint256) {
+        TycoonLib.validateUsername(username);
         require(users[username].playerAddress == address(0), "Username taken");
         require(!registered[msg.sender], "Already registered");
 
@@ -439,10 +518,53 @@ contract Tycoon is ReentrancyGuard, Ownable {
 
         registered[msg.sender] = true;
         addressToUsername[msg.sender] = username;
+        addressVerified[msg.sender] = true;
 
         rewardSystem.mintVoucher(msg.sender, 2 * TOKEN_REWARD);
 
         emit PlayerCreated(username, msg.sender, ts);
+        return totalUsers;
+    }
+
+    /// @notice Backend registers a user on behalf of an address (e.g. before they connect wallet). They get no perks until verifyAddress(signature).
+    function registerPlayerFor(address playerAddress, string memory username, bytes32 passwordHash)
+        external
+        onlyGameController
+        returns (uint256)
+    {
+        TycoonLib.validateUsername(username);
+        require(users[username].playerAddress == address(0), "Username taken");
+        require(!registered[playerAddress], "Already registered");
+        require(playerAddress != address(0), "Zero address");
+        require(passwordHash != bytes32(0), "Password hash required");
+
+        _passwordHashOf[playerAddress] = passwordHash;
+        addressVerified[playerAddress] = false;
+
+        totalUsers++;
+        uint64 ts = uint64(block.timestamp);
+
+        users[username] = TycoonLib.User({
+            id: totalUsers,
+            username: username,
+            playerAddress: playerAddress,
+            registeredAt: ts,
+            gamesPlayed: 0,
+            gamesWon: 0,
+            gamesLost: 0,
+            totalStaked: 0,
+            totalEarned: 0,
+            totalWithdrawn: 0,
+            propertiesbought: 0,
+            propertiesSold: 0
+        });
+
+        registered[playerAddress] = true;
+        addressToUsername[playerAddress] = username;
+
+        rewardSystem.mintVoucher(playerAddress, 2 * TOKEN_REWARD);
+
+        emit PlayerRegisteredByBackend(username, playerAddress);
         return totalUsers;
     }
 
@@ -454,25 +576,58 @@ contract Tycoon is ReentrancyGuard, Ownable {
         string memory code,
         uint256 startingBalance,
         uint256 stakeAmount
-    ) external nonReentrant nonEmptyUsername(creatorUsername) returns (uint256 gameId) {
+    ) external nonReentrant returns (uint256 gameId) {
+        return _createGame(msg.sender, creatorUsername, gameType, playerSymbol, numberOfPlayers, code, startingBalance, stakeAmount);
+    }
+
+    /// @notice Backend creates a game on behalf of a player. Pass either forPlayer or forUsername; passwordHash must match stored hash.
+    function createGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        string memory creatorUsername,
+        string memory gameType,
+        string memory playerSymbol,
+        uint8 numberOfPlayers,
+        string memory code,
+        uint256 startingBalance,
+        uint256 stakeAmount
+    ) external nonReentrant returns (uint256 gameId) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        return _createGame(actor, creatorUsername, gameType, playerSymbol, numberOfPlayers, code, startingBalance, stakeAmount);
+    }
+
+    function _createGame(
+        address actor,
+        string memory creatorUsername,
+        string memory gameType,
+        string memory playerSymbol,
+        uint8 numberOfPlayers,
+        string memory code,
+        uint256 startingBalance,
+        uint256 stakeAmount
+    ) internal returns (uint256 gameId) {
+        TycoonLib.validateUsername(creatorUsername);
+        uint8 gType = TycoonLib.stringToGameType(gameType);
+        TycoonLib.validateCode(code, gType == uint8(TycoonLib.GameType.PrivateGame));
         if (stakeAmount > 0) {
             require(stakeAmount >= minStake, "Stake too low");
         }
 
         require(numberOfPlayers >= 2 && numberOfPlayers <= 8, "Players 2-8");
         require(startingBalance > 0, "Invalid balance");
-        require(registered[msg.sender], "Not registered");
+        require(registered[actor], "Not registered");
 
         TycoonLib.User storage user = users[creatorUsername];
-        require(user.playerAddress == msg.sender, "Username mismatch");
+        require(user.playerAddress == actor, "Username mismatch");
 
-        uint8 gType = TycoonLib.stringToGameType(gameType);
         if (gType == uint8(TycoonLib.GameType.PrivateGame)) {
             require(bytes(code).length > 0, "Code required for private game");
         }
 
         if (stakeAmount > 0) {
-            require(rewardSystem.usdc().transferFrom(msg.sender, address(this), stakeAmount), "USDC transfer failed");
+            require(rewardSystem.usdc().transferFrom(actor, address(this), stakeAmount), "USDC transfer failed");
         }
 
         gameId = _nextGameId++;
@@ -490,7 +645,7 @@ contract Tycoon is ReentrancyGuard, Ownable {
         games[gameId] = TycoonLib.Game({
             id: gameId,
             code: code,
-            creator: msg.sender,
+            creator: actor,
             status: TycoonLib.GameStatus.Pending,
             winner: address(0),
             numberOfPlayers: numberOfPlayers,
@@ -503,9 +658,9 @@ contract Tycoon is ReentrancyGuard, Ownable {
             stakePerPlayer: stakeAmount
         });
 
-        gamePlayers[gameId][msg.sender] = TycoonLib.GamePlayer({
+        gamePlayers[gameId][actor] = TycoonLib.GamePlayer({
             gameId: gameId,
-            playerAddress: msg.sender,
+            playerAddress: actor,
             balance: startingBalance,
             position: 0,
             order: 1,
@@ -513,18 +668,17 @@ contract Tycoon is ReentrancyGuard, Ownable {
             username: creatorUsername
         });
 
-        gameOrderToPlayer[gameId][1] = msg.sender;
+        gameOrderToPlayer[gameId][1] = actor;
         codeToGame[code] = games[gameId];
-        previousGameCode[msg.sender] = code;
+        previousGameCode[actor] = code;
 
         user.gamesPlayed++;
         user.totalStaked += stakeAmount;
         totalGames++;
 
-        emit GameCreated(gameId, msg.sender, uint64(block.timestamp));
+        emit GameCreated(gameId, actor, uint64(block.timestamp));
     }
 
-    // createAIGame remains unchanged (already no stake)
     function createAIGame(
         string memory creatorUsername,
         string memory gameType,
@@ -532,19 +686,47 @@ contract Tycoon is ReentrancyGuard, Ownable {
         uint8 numberOfAI,
         string memory code,
         uint256 startingBalance
-    ) external nonReentrant nonEmptyUsername(creatorUsername) returns (uint256 gameId) {
+    ) external nonReentrant returns (uint256 gameId) {
+        return _createAIGame(msg.sender, creatorUsername, gameType, playerSymbol, numberOfAI, code, startingBalance);
+    }
+
+    function createAIGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        string memory creatorUsername,
+        string memory gameType,
+        string memory playerSymbol,
+        uint8 numberOfAI,
+        string memory code,
+        uint256 startingBalance
+    ) external nonReentrant returns (uint256 gameId) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        return _createAIGame(actor, creatorUsername, gameType, playerSymbol, numberOfAI, code, startingBalance);
+    }
+
+    function _createAIGame(
+        address actor,
+        string memory creatorUsername,
+        string memory gameType,
+        string memory playerSymbol,
+        uint8 numberOfAI,
+        string memory code,
+        uint256 startingBalance
+    ) internal returns (uint256 gameId) {
+        TycoonLib.validateUsername(creatorUsername);
+        TycoonLib.validateCode(code, false);
         require(numberOfAI >= 1 && numberOfAI <= 7, "AI players 1-7");
         require(bytes(gameType).length > 0 && bytes(playerSymbol).length > 0, "Invalid params");
         require(startingBalance > 0, "Invalid balance");
-        require(registered[msg.sender], "Not registered");
+        require(registered[actor], "Not registered");
 
         TycoonLib.User storage user = users[creatorUsername];
-        require(user.playerAddress == msg.sender, "Username mismatch");
+        require(user.playerAddress == actor, "Username mismatch");
 
         uint8 gType = TycoonLib.stringToGameType(gameType);
         gameId = _nextGameId++;
-        address creator = msg.sender;
-
         uint8 totalPlayers = 1 + numberOfAI;
 
         gameSettings[gameId] = TycoonLib.GameSettings({
@@ -560,7 +742,7 @@ contract Tycoon is ReentrancyGuard, Ownable {
         games[gameId] = TycoonLib.Game({
             id: gameId,
             code: code,
-            creator: creator,
+            creator: actor,
             status: TycoonLib.GameStatus.Ongoing,
             winner: address(0),
             numberOfPlayers: totalPlayers,
@@ -573,9 +755,9 @@ contract Tycoon is ReentrancyGuard, Ownable {
             stakePerPlayer: 0
         });
 
-        gamePlayers[gameId][creator] = TycoonLib.GamePlayer({
+        gamePlayers[gameId][actor] = TycoonLib.GamePlayer({
             gameId: gameId,
-            playerAddress: creator,
+            playerAddress: actor,
             balance: startingBalance,
             position: 0,
             order: 1,
@@ -583,7 +765,7 @@ contract Tycoon is ReentrancyGuard, Ownable {
             username: creatorUsername
         });
 
-        gameOrderToPlayer[gameId][1] = creator;
+        gameOrderToPlayer[gameId][1] = actor;
 
         for (uint8 i = 2; i <= totalPlayers; i++) {
             address aiAddr = address(uint160(i));
@@ -600,72 +782,93 @@ contract Tycoon is ReentrancyGuard, Ownable {
         }
 
         codeToGame[code] = games[gameId];
-        previousGameCode[msg.sender] = code;
+        previousGameCode[actor] = code;
 
         user.gamesPlayed++;
         totalGames++;
 
-        emit GameCreated(gameId, creator, uint64(block.timestamp));
+        emit GameCreated(gameId, actor, uint64(block.timestamp));
     }
 
     function endAIGame(
         uint256 gameId,
-        uint8 finalPosition, // 1 = win, 2+ = placement/lose
-        uint256 finalBalance, // optional: for logging/screenshots
+        uint8 finalPosition,
+        uint256 finalBalance,
         bool isWin
     ) external nonReentrant returns (bool) {
+        return _endAIGame(msg.sender, gameId, finalPosition, finalBalance, isWin);
+    }
+
+    function endAIGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        uint256 gameId,
+        uint8 finalPosition,
+        uint256 finalBalance,
+        bool isWin
+    ) external nonReentrant returns (bool) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        return _endAIGame(actor, gameId, finalPosition, finalBalance, isWin);
+    }
+
+    function _endAIGame(
+        address actor,
+        uint256 gameId,
+        uint8 finalPosition,
+        uint256 finalBalance,
+        bool isWin
+    ) internal returns (bool) {
         TycoonLib.Game storage game = games[gameId];
 
         require(game.ai, "Not an AI game");
         require(game.status == TycoonLib.GameStatus.Ongoing, "Game already ended");
-        require(game.creator == msg.sender, "Only creator can end AI game");
+        require(game.creator == actor, "Only creator can end AI game");
 
-        // Update player state
-        gamePlayers[gameId][msg.sender].position = finalPosition;
-        gamePlayers[gameId][msg.sender].balance = finalBalance;
+        gamePlayers[gameId][actor].position = finalPosition;
+        gamePlayers[gameId][actor].balance = finalBalance;
 
         game.status = TycoonLib.GameStatus.Ended;
-        game.winner = isWin ? msg.sender : address(0);
+        game.winner = isWin ? actor : address(0);
         game.endedAt = uint64(block.timestamp);
+        codeToGame[game.code] = game;
 
-        TycoonLib.User storage user = users[gamePlayers[gameId][msg.sender].username];
+        TycoonLib.User storage user = users[gamePlayers[gameId][actor].username];
 
         uint256 voucherAmount = 0;
         TycoonLib.CollectiblePerk perk = TycoonLib.CollectiblePerk.NONE;
         uint256 strength = 1;
 
-        // Very simple reward logic (no pot → no house cut needed)
         if (isWin) {
-            voucherAmount = 2 * TOKEN_REWARD; // 2 TYC
-
-            // Random collectible drop (same ranges as before)
-            uint8 r = uint8(block.prevrandao % 100);
-            if (r < 40) perk = TycoonLib.CollectiblePerk.EXTRA_TURN;
-            else if (r < 65) perk = TycoonLib.CollectiblePerk.JAIL_FREE;
-            else if (r < 80) perk = TycoonLib.CollectiblePerk.SHIELD;
-            else if (r < 90) perk = TycoonLib.CollectiblePerk.TELEPORT;
-            else if (r < 97) perk = TycoonLib.CollectiblePerk.ROLL_EXACT;
-            else perk = TycoonLib.CollectiblePerk.PROPERTY_DISCOUNT;
-
             user.gamesWon++;
-            // totalEarned not increased (no real money)
+            if (addressVerified[actor]) {
+                voucherAmount = 2 * TOKEN_REWARD;
+                uint8 r = uint8(block.prevrandao % 100);
+                if (r < 40) perk = TycoonLib.CollectiblePerk.EXTRA_TURN;
+                else if (r < 65) perk = TycoonLib.CollectiblePerk.JAIL_FREE;
+                else if (r < 80) perk = TycoonLib.CollectiblePerk.SHIELD;
+                else if (r < 90) perk = TycoonLib.CollectiblePerk.TELEPORT;
+                else if (r < 97) perk = TycoonLib.CollectiblePerk.ROLL_EXACT;
+                else perk = TycoonLib.CollectiblePerk.PROPERTY_DISCOUNT;
+            } else {
+                voucherAmount = CONSOLATION_VOUCHER;
+            }
         } else {
-            // Small consolation for participation/loss
-            voucherAmount = CONSOLATION_VOUCHER; // 0.1 TYC
+            voucherAmount = CONSOLATION_VOUCHER;
             user.gamesLost++;
         }
 
-        // Mint rewards
         if (voucherAmount > 0) {
-            rewardSystem.mintVoucher(msg.sender, voucherAmount);
+            rewardSystem.mintVoucher(actor, voucherAmount);
         }
         if (perk != TycoonLib.CollectiblePerk.NONE) {
-            rewardSystem.mintCollectible(msg.sender, perk, strength);
+            rewardSystem.mintCollectible(actor, perk, strength);
         }
 
         codeToGame[game.code] = game;
 
-        emit AIGameEnded(gameId, msg.sender, uint64(block.timestamp));
+        emit AIGameEnded(gameId, actor, uint64(block.timestamp));
 
         return true;
     }
@@ -673,19 +876,43 @@ contract Tycoon is ReentrancyGuard, Ownable {
     function joinGame(uint256 gameId, string memory playerUsername, string memory playerSymbol, string memory joinCode)
         external
         nonReentrant
-        nonEmptyUsername(playerUsername)
         returns (uint8 order)
     {
+        return _joinGame(msg.sender, gameId, playerUsername, playerSymbol, joinCode);
+    }
+
+    function joinGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        uint256 gameId,
+        string memory playerUsername,
+        string memory playerSymbol,
+        string memory joinCode
+    ) external nonReentrant returns (uint8 order) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        return _joinGame(actor, gameId, playerUsername, playerSymbol, joinCode);
+    }
+
+    function _joinGame(
+        address actor,
+        uint256 gameId,
+        string memory playerUsername,
+        string memory playerSymbol,
+        string memory joinCode
+    ) internal returns (uint8 order) {
+        TycoonLib.validateUsername(playerUsername);
         TycoonLib.Game storage game = games[gameId];
         require(!game.ai, "Cannot join AI game");
         require(game.creator != address(0), "Game not found");
         require(game.status == TycoonLib.GameStatus.Pending, "Game not open");
         require(game.joinedPlayers < game.numberOfPlayers, "Game is full");
-        require(registered[msg.sender], "Not registered");
+        require(registered[actor], "Not registered");
 
         TycoonLib.User storage user = users[playerUsername];
-        require(user.playerAddress == msg.sender, "Username mismatch");
-        require(gamePlayers[gameId][msg.sender].playerAddress == address(0), "Already joined");
+        require(user.playerAddress == actor, "Username mismatch");
+        require(gamePlayers[gameId][actor].playerAddress == address(0), "Already joined");
 
         if (game.mode == TycoonLib.GameType.PrivateGame) {
             require(keccak256(bytes(joinCode)) == keccak256(bytes(game.code)), "Wrong code");
@@ -693,7 +920,7 @@ contract Tycoon is ReentrancyGuard, Ownable {
 
         if (game.stakePerPlayer > 0) {
             require(
-                rewardSystem.usdc().transferFrom(msg.sender, address(this), game.stakePerPlayer), "Stake payment failed"
+                rewardSystem.usdc().transferFrom(actor, address(this), game.stakePerPlayer), "Stake payment failed"
             );
         }
 
@@ -703,9 +930,9 @@ contract Tycoon is ReentrancyGuard, Ownable {
 
         order = ++game.joinedPlayers;
 
-        gamePlayers[gameId][msg.sender] = TycoonLib.GamePlayer({
+        gamePlayers[gameId][actor] = TycoonLib.GamePlayer({
             gameId: gameId,
-            playerAddress: msg.sender,
+            playerAddress: actor,
             balance: gameSettings[gameId].startingCash,
             position: 0,
             order: order,
@@ -713,16 +940,65 @@ contract Tycoon is ReentrancyGuard, Ownable {
             username: playerUsername
         });
 
-        gameOrderToPlayer[gameId][order] = msg.sender;
-        previousGameCode[msg.sender] = game.code;
+        gameOrderToPlayer[gameId][order] = actor;
+        previousGameCode[actor] = game.code;
 
-        emit PlayerJoined(gameId, msg.sender, order);
+        emit PlayerJoined(gameId, actor, order);
 
         if (game.joinedPlayers == game.numberOfPlayers) {
             game.status = TycoonLib.GameStatus.Ongoing;
         }
 
         codeToGame[game.code] = game;
+    }
+
+    /// @notice Leave a game before it starts (status still Pending). Refunds your full stake.
+    function leavePendingGame(uint256 gameId) external nonReentrant returns (bool) {
+        return _leavePendingGame(msg.sender, gameId);
+    }
+
+    function leavePendingGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        uint256 gameId
+    ) external nonReentrant returns (bool) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        return _leavePendingGame(actor, gameId);
+    }
+
+    function _leavePendingGame(address actor, uint256 gameId) internal returns (bool) {
+        TycoonLib.Game storage game = games[gameId];
+        require(game.creator != address(0), "Game not found");
+        require(game.status == TycoonLib.GameStatus.Pending, "Game already started");
+        require(!game.ai, "Not for AI games");
+
+        TycoonLib.GamePlayer storage gp = gamePlayers[gameId][actor];
+        require(gp.playerAddress != address(0), "Not in game");
+
+        uint256 stakeAmount = game.stakePerPlayer;
+        if (stakeAmount > 0) {
+            require(rewardSystem.usdc().transfer(actor, stakeAmount), "Refund failed");
+            game.totalStaked -= stakeAmount;
+        }
+
+        TycoonLib.User storage user = users[gp.username];
+        user.gamesPlayed--;
+        user.totalStaked -= stakeAmount;
+
+        uint8 order = gp.order;
+        delete gamePlayers[gameId][actor];
+        delete gameOrderToPlayer[gameId][order];
+        game.joinedPlayers--;
+
+        if (game.joinedPlayers == 0) {
+            game.status = TycoonLib.GameStatus.Ended;
+        }
+        codeToGame[game.code] = game;
+
+        emit PlayerLeftPendingGame(gameId, actor, stakeAmount);
+        return true;
     }
 
     function _removePlayer(uint256 gameId, address playerToRemove) internal {
@@ -742,7 +1018,18 @@ contract Tycoon is ReentrancyGuard, Ownable {
         emit PlayerRemoved(gameId, playerToRemove, uint64(block.timestamp));
     }
 
-    function _payoutReward(uint256 gameId, address player, uint256 rank) private {
+    /// @dev When joinedPlayers == 1, returns the single remaining player address (for ending game in same tx).
+    function _getRemainingPlayer(uint256 gameId) internal view returns (address) {
+        TycoonLib.Game storage game = games[gameId];
+        for (uint8 i = 1; i <= game.numberOfPlayers; i++) {
+            address a = gameOrderToPlayer[gameId][i];
+            if (a != address(0)) return a;
+        }
+        return address(0);
+    }
+
+    /// @param turnCount Pass type(uint256).max to skip min-turns check (e.g. voluntary exit). Otherwise backend-reported turn count for removePlayerFromGame.
+    function _payoutReward(uint256 gameId, address player, uint256 rank, uint256 turnCount) private {
         TycoonLib.Game storage game = games[gameId];
         uint256 pot = game.totalStaked;
         IERC20 usdcToken = rewardSystem.usdc();
@@ -753,26 +1040,40 @@ contract Tycoon is ReentrancyGuard, Ownable {
             return;
         }
 
-        // House cut is now handled ONLY in exitGame (last player branch)
-        // Here we assume the pot is already after house cut (or use full pot if cut moved)
-        // For your current test, we use full pot and adjust expectations accordingly
-        uint256 distributable = pot * (100 - HOUSE_PERCENT) / 100;
+        // Backend-registered users get no USDC/collectibles until they verify address
+        if (!addressVerified[player]) {
+            rewardSystem.mintVoucher(player, CONSOLATION_VOUCHER);
+            emit RewardClaimed(gameId, player, 0);
+            return;
+        }
 
-        uint256 rewardAmount;
-        if (rank == 1) {
-            rewardAmount = distributable * 50 / 100;
-        } else if (rank == 2) {
-            rewardAmount = distributable * 30 / 100;
-        } else if (rank == 3) {
-            rewardAmount = distributable * 20 / 100;
-        } else {
+        // type(uint256).max = voluntary exit: use on-chain turnsPlayed. Otherwise use passed turnCount (removePlayerFromGame).
+        uint256 effectiveTurns = turnCount == type(uint256).max ? turnsPlayed[gameId][player] : turnCount;
+        if (minTurnsForPerks > 0 && effectiveTurns < minTurnsForPerks) {
+            rewardSystem.mintVoucher(player, CONSOLATION_VOUCHER);
+            emit RewardClaimed(gameId, player, 0);
+            return;
+        }
+
+        uint256 distributable = TycoonLib.getDistributablePot(pot);
+        uint256 rewardAmount = TycoonLib.getRankRewardAmount(distributable, rank);
+
+        if (rewardAmount == 0) {
+            rewardSystem.mintVoucher(player, CONSOLATION_VOUCHER);
+            emit RewardClaimed(gameId, player, 0);
+            return;
+        }
+
+        // If contract doesn't have enough USDC (e.g. accounting mismatch, bankrupt flow), give voucher only so removal never reverts.
+        uint256 available = usdcToken.balanceOf(address(this));
+        if (available < rewardAmount) {
             rewardSystem.mintVoucher(player, CONSOLATION_VOUCHER);
             emit RewardClaimed(gameId, player, 0);
             return;
         }
 
         require(usdcToken.transfer(player, rewardAmount), "USDC transfer failed");
-
+        require(bytes(addressToUsername[player]).length > 0, "Player not registered");
         users[addressToUsername[player]].totalEarned += rewardAmount;
 
         if (rank <= 3) {
@@ -819,60 +1120,116 @@ contract Tycoon is ReentrancyGuard, Ownable {
         rewardSystem.mintVoucher(player, TOKEN_REWARD);
     }
 
-    function exitGame(uint256 gameId) public nonReentrant onlyPlayerInGame(gameId, msg.sender) returns (bool) {
+    /// @dev turnCount: use type(uint256).max for voluntary exit (no min-turns check); use backend value when removing so contract can enforce minTurnsForPerks.
+    function _exitOrRemovePlayer(uint256 gameId, address player, uint256 turnCount) internal {
         TycoonLib.Game storage game = games[gameId];
         require(game.status == TycoonLib.GameStatus.Ongoing, "Game not ongoing");
         require(!game.ai, "Cannot exit AI game");
+        require(gamePlayers[gameId][player].playerAddress != address(0), "Not in game");
 
         uint256 rank;
 
         if (game.joinedPlayers == 1) {
-            // Last player = winner → take house cut ONLY ONCE here
-            uint256 houseCut = (game.totalStaked * HOUSE_PERCENT) / 100;
+            uint256 houseCut = (game.totalStaked * TycoonLib.getHousePercent()) / 100;
             houseUSDC += houseCut;
 
             rank = 1;
-            claims[gameId][msg.sender] = rank;
+            claims[gameId][player] = rank;
 
-            _payoutReward(gameId, msg.sender, rank);
+            _payoutReward(gameId, player, rank, turnCount);
 
-            users[gamePlayers[gameId][msg.sender].username].gamesWon++;
+            users[gamePlayers[gameId][player].username].gamesWon++;
 
             game.status = TycoonLib.GameStatus.Ended;
-            game.winner = msg.sender;
+            game.winner = player;
             game.endedAt = uint64(block.timestamp);
+            codeToGame[game.code] = game;
 
-            emit GameEnded(gameId, msg.sender, uint64(block.timestamp));
+            emit GameEnded(gameId, player, uint64(block.timestamp));
         } else {
-            rank = game.joinedPlayers; // first out = rank 3, etc.
-            _removePlayer(gameId, msg.sender);
-            claims[gameId][msg.sender] = rank;
+            rank = game.joinedPlayers;
+            _removePlayer(gameId, player);
+            claims[gameId][player] = rank;
 
-            // Payout this player — no house cut here
-            _payoutReward(gameId, msg.sender, rank);
+            _payoutReward(gameId, player, rank, turnCount);
+
+            // If removal left exactly one player, end the game and pay winner in this same tx (one backend call).
+            if (game.joinedPlayers == 1) {
+                address remaining = _getRemainingPlayer(gameId);
+                require(remaining != address(0), "No remaining player");
+                users[gamePlayers[gameId][remaining].username].gamesWon++;
+                game.status = TycoonLib.GameStatus.Ended;
+                game.winner = remaining;
+                game.endedAt = uint64(block.timestamp);
+                codeToGame[game.code] = game;
+                claims[gameId][remaining] = 1;
+                _payoutReward(gameId, remaining, 1, type(uint256).max);
+                emit GameEnded(gameId, remaining, uint64(block.timestamp));
+            }
         }
 
-        emit PlayerExited(gameId, msg.sender);
+        emit PlayerExited(gameId, player);
+    }
+
+    /// @notice Player voluntarily exits the game (payout by rank). Min-turns check uses on-chain turnsPlayed (backend calls setTurnCount once when player reaches threshold).
+    function exitGame(uint256 gameId) public nonReentrant onlyPlayerInGame(gameId, msg.sender) returns (bool) {
+        _exitOrRemovePlayer(gameId, msg.sender, type(uint256).max);
         return true;
     }
-    // Minimal property transfer (backend only)
 
-    function transferPropertyOwnership(string memory sellerUsername, string memory buyerUsername) external  {
-        // Seller
-        if (bytes(sellerUsername).length > 0) {
-            TycoonLib.User storage seller = users[sellerUsername];
-            if (seller.playerAddress != address(0) && seller.propertiesbought > 0) {
-                seller.propertiesSold++;
-            }
-        }
+    function exitGameByBackend(
+        address forPlayer,
+        string memory forUsername,
+        bytes32 passwordHash,
+        uint256 gameId
+    ) external nonReentrant returns (bool) {
+        address actor = _resolvePlayer(forPlayer, forUsername);
+        _requireBackendAuth(actor, passwordHash);
+        require(gamePlayers[gameId][actor].playerAddress != address(0), "Not in game");
+        _exitOrRemovePlayer(gameId, actor, type(uint256).max);
+        return true;
+    }
 
-        // Buyer
-        if (bytes(buyerUsername).length > 0) {
-            TycoonLib.User storage buyer = users[buyerUsername];
-            if (buyer.playerAddress != address(0)) {
-                buyer.propertiesbought++;
-            }
-        }
+    /// @notice Backend removes a player (e.g. vote-out, stalling). Pass turnCount from your DB; if below minTurnsForPerks they get consolation only.
+    function removePlayerFromGame(uint256 gameId, address player, uint256 turnCount)
+        external
+        nonReentrant
+        onlyGameController
+        onlyPlayerInGame(gameId, player)
+        returns (bool)
+    {
+        _exitOrRemovePlayer(gameId, player, turnCount);
+        emit PlayerRemovedByController(gameId, player, msg.sender);
+        return true;
+    }
+
+    // ------------------------------------------------------------------------
+    // Property ownership (backend / game controller only)
+    /// @notice Record a property sale for stats. Callable only by backend game controller.
+    /// @param sellerUsername Username of the seller (must be registered).
+    /// @param buyerUsername Username of the buyer (must be registered).
+    function transferPropertyOwnership(string memory sellerUsername, string memory buyerUsername)
+        external
+        onlyGameController
+    {
+        TycoonLib.validateUsername(sellerUsername);
+        TycoonLib.validateUsername(buyerUsername);
+
+        TycoonLib.User storage seller = users[sellerUsername];
+        TycoonLib.User storage buyer = users[buyerUsername];
+
+        require(seller.playerAddress != address(0), "Seller not registered");
+        require(buyer.playerAddress != address(0), "Buyer not registered");
+        require(seller.playerAddress != buyer.playerAddress, "Seller and buyer must differ");
+
+        seller.propertiesSold++;
+        buyer.propertiesbought++;
+    }
+
+    function setMinStake(uint256 newMinStake) external onlyOwner {
+        uint256 previous = minStake;
+        minStake = newMinStake;
+        emit MinStakeUpdated(previous, newMinStake);
     }
 
     function withdrawHouse(uint256 amount) external onlyOwner {
@@ -909,18 +1266,20 @@ contract Tycoon is ReentrancyGuard, Ownable {
     function getGamePlayer(uint256 gameId, address player)
         external
         view
-        returns (TycoonLib.GamePlayer memory gamePlayer_)
-    {
-        gamePlayer_ = gamePlayers[gameId][player];
-        return gamePlayer_;
-    }
-
-    function getGamePlayerByAddress(uint256 gameId, address player)
-        external
-        view
         returns (TycoonLib.GamePlayer memory)
     {
         return gamePlayers[gameId][player];
+    }
+
+    /// @return Array of current player addresses in the game (order 1..numberOfPlayers; holes if someone exited).
+    function getPlayersInGame(uint256 gameId) external view returns (address[] memory) {
+        TycoonLib.Game storage game = games[gameId];
+        require(game.creator != address(0), "Game not found");
+        address[] memory out = new address[](game.numberOfPlayers);
+        for (uint8 i = 1; i <= game.numberOfPlayers; i++) {
+            out[i - 1] = gameOrderToPlayer[gameId][i];
+        }
+        return out;
     }
 
     function getGameSettings(uint256 gameId) external view returns (TycoonLib.GameSettings memory) {
