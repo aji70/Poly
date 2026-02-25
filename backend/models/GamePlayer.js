@@ -75,6 +75,7 @@ const GamePlayer = {
       .leftJoin("users as u", "gp.user_id", "u.id")
       .leftJoin("games as g", "gp.game_id", "g.id")
       .select(
+        "gp.id",
         "gp.user_id",
         "gp.address",
         "gp.chance_jail_card",
@@ -84,7 +85,13 @@ const GamePlayer = {
         "gp.turn_order",
         "gp.symbol",
         "gp.rolls",
+        "gp.rolled",
         "gp.circle",
+        "gp.in_jail",
+        "gp.in_jail_rolls",
+        "gp.turn_start",
+        "gp.consecutive_timeouts",
+        "gp.turn_count",
         "gp.created_at as joined_date",
         "u.username"
       )
@@ -132,6 +139,13 @@ const GamePlayer = {
 
   async leave(game_id, user_id) {
     return db("game_players").where({ game_id, user_id }).del();
+  },
+
+  async setTurnStart(game_id, user_id) {
+    const turnStartSeconds = String(Math.floor(Date.now() / 1000));
+    await db("game_players")
+      .where({ game_id, user_id })
+      .update({ turn_start: turnStartSeconds, updated_at: db.fn.now() });
   },
 };
 

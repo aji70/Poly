@@ -1,6 +1,16 @@
 import db from "../config/database.js";
+import Game from "../models/Game.js";
 import GameTradeRequest from "../models/GameTradeRequest.js";
+import User from "../models/User.js";
 import { safeJsonParse } from "../utils/string.js";
+import { transferPropertyOwnership, isContractConfigured } from "../services/tycoonContract.js";
+import {
+  recordPropertyPurchase,
+  incrementPropertiesSold,
+  incrementTradesInitiated,
+  incrementTradesAccepted,
+} from "../utils/userPropertyStats.js";
+import logger from "../config/logger.js";
 
 export const GameTradeRequestController = {
   // CREATE TRADE REQUEST
@@ -228,6 +238,39 @@ export const GameTradeRequestController = {
         updated_at: new Date(),
       });
       await trx.commit();
+
+      const playerUser = await db("users").where({ id: player.user_id }).select("username").first();
+      const targetUser = await db("users").where({ id: target_player.user_id }).select("username").first();
+      const playerUsername = playerUser?.username ?? null;
+      const targetUsername = targetUser?.username ?? null;
+
+      incrementTradesInitiated(player.user_id).catch(() => {});
+      incrementTradesAccepted(target_player.user_id).catch(() => {});
+      for (const propId of offeredProps) {
+        incrementPropertiesSold(player.user_id).catch(() => {});
+        recordPropertyPurchase(target_player.user_id, propId, game_id, "trade").catch(() => {});
+      }
+      for (const propId of requestedProps) {
+        incrementPropertiesSold(target_player.user_id).catch(() => {});
+        recordPropertyPurchase(player.user_id, propId, game_id, "trade").catch(() => {});
+      }
+
+      const game = await Game.findById(game_id);
+      const chainForTrade = game ? User.normalizeChain(game.chain || "CELO") : "CELO";
+      if (isContractConfigured(chainForTrade) && playerUsername && targetUsername) {
+        (async () => {
+          try {
+            for (const _ of offeredProps) {
+              await transferPropertyOwnership(playerUsername, targetUsername, chainForTrade);
+            }
+            for (const _ of requestedProps) {
+              await transferPropertyOwnership(targetUsername, playerUsername, chainForTrade);
+            }
+          } catch (err) {
+            logger.warn({ err, game_id }, "Tycoon transferPropertyOwnership failed (trade request accept)");
+          }
+        })();
+      }
 
       return res.json({
         success: true,

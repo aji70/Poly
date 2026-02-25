@@ -1,4 +1,5 @@
 import User from "../models/User.js";
+import { getUserPropertyStats } from "../utils/userPropertyStats.js";
 
 /**
  * User Controller
@@ -12,6 +13,13 @@ const userController = {
 
   async create(req, res) {
     try {
+      const { username } = req.body || {};
+      if (username != null && String(username).trim() !== "") {
+        const taken = await User.findByUsernameIgnoreCase(username);
+        if (taken) {
+          return res.status(409).json({ error: "Username already taken", message: "Username already taken" });
+        }
+      }
       const user = await User.create(req.body);
       res.status(201).json(user);
     } catch (error) {
@@ -25,6 +33,18 @@ const userController = {
       const user = await User.findById(req.params.id);
       if (!user) return res.status(404).json({ error: "User not found" });
       res.json(user);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  },
+
+  async getPropertyStats(req, res) {
+    try {
+      const userId = req.params.id;
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const stats = await getUserPropertyStats(userId);
+      res.json(stats ?? { properties_bought: 0, properties_sold: 0, trades_initiated: 0, trades_accepted: 0, favourite_property: null });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -67,6 +87,13 @@ const userController = {
 
   async update(req, res) {
     try {
+      const { username } = req.body || {};
+      if (username != null && String(username).trim() !== "") {
+        const taken = await User.findByUsernameIgnoreCase(username);
+        if (taken && Number(taken.id) !== Number(req.params.id)) {
+          return res.status(409).json({ error: "Username already taken", message: "Username already taken" });
+        }
+      }
       const user = await User.update(req.params.id, req.body);
       res.json(user);
     } catch (error) {
@@ -84,45 +111,94 @@ const userController = {
   },
 
   // -------------------------
-  // 🏆 Leaderboards
+  // 🏆 Leaderboard (by chain)
   // -------------------------
 
-  async leaderboardByWins(req, res) {
+  /**
+   * GET /api/users/leaderboard?chain=&type=wins|earnings|stakes|winrate&limit=20
+   * Returns top players for the given chain. Chain can be name (BASE, CELO) or chainId (8453, 42220).
+   */
+  async getLeaderboard(req, res) {
     try {
-      const { limit } = req.query;
-      const data = await User.leaderboardByWins(Number.parseInt(limit) || 10);
-      res.json(data);
+      const { chain = "BASE", type = "wins", limit = 20 } = req.query;
+      const normalizedLimit = Math.min(Number.parseInt(limit, 10) || 20, 100);
+      const normalizedType = String(type).toLowerCase();
+      let data;
+      switch (normalizedType) {
+        case "wins":
+          data = await User.getLeaderboardByWins(chain, normalizedLimit);
+          break;
+        case "earnings":
+          data = await User.getLeaderboardByEarnings(chain, normalizedLimit);
+          break;
+        case "stakes":
+          data = await User.getLeaderboardByStakes(chain, normalizedLimit);
+          break;
+        case "winrate":
+          data = await User.getLeaderboardByWinRate(chain, normalizedLimit);
+          break;
+        default:
+          return res.status(400).json({ error: "Invalid type. Use: wins, earnings, stakes, winrate" });
+      }
+      res.json(Array.isArray(data) ? data : []);
     } catch (error) {
+      console.error("Leaderboard error:", error);
       res.status(500).json({ error: error.message });
     }
   },
 
-  async leaderboardByEarnings(req, res) {
+  /**
+   * POST /api/users/sync-leaderboard?chain=CELO
+   * Fetches each user's stats from the chain (getUser) and updates the DB.
+   * This backfills the leaderboard with full on-chain history so it's not "starting from now".
+   * Backend contract is configured for Celo only; other chains are no-ops.
+   */
+  async syncLeaderboardFromChain(req, res) {
     try {
-      const { limit } = req.query;
-      const data = await User.leaderboardByEarnings(Number.parseInt(limit) || 10);
-      res.json(data);
+      const { chain = "CELO" } = req.query;
+      const normalized = User.normalizeChain(chain);
+      if (!isContractConfigured(normalized)) {
+        return res.status(503).json({
+          error: "Contract not configured",
+          message: `Backend cannot read from chain ${normalized}. Set ${normalized}_RPC_URL and TYCOON_${normalized}_CONTRACT_ADDRESS.`,
+        });
+      }
+      const users = await User.findAllByChain(normalized, { limit: 500 });
+      let updated = 0;
+      let failed = 0;
+      for (const user of users) {
+        try {
+          const raw = await callContractRead("getUser", [user.username], normalized);
+          const r = raw && (Array.isArray(raw) ? raw : [raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7], raw[8], raw[9]]);
+          if (!r || r.length < 10) continue;
+          const gamesPlayed = Number(r[4] ?? 0);
+          const gameWon = Number(r[5] ?? 0);
+          const gameLost = Number(r[6] ?? 0);
+          const totalStaked = Number(r[7] ?? 0);
+          const totalEarned = Number(r[8] ?? 0);
+          const totalWithdrawn = Number(r[9] ?? 0);
+          await User.update(user.id, {
+            games_played: gamesPlayed,
+            game_won: gameWon,
+            game_lost: gameLost,
+            total_staked: totalStaked,
+            total_earned: totalEarned,
+            total_withdrawn: totalWithdrawn,
+          });
+          updated++;
+        } catch (err) {
+          failed++;
+        }
+      }
+      res.json({
+        message: "Leaderboard synced from chain",
+        chain: normalized,
+        usersProcessed: users.length,
+        updated,
+        failed,
+      });
     } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  },
-
-  async leaderboardByStakes(req, res) {
-    try {
-      const { limit } = req.query;
-      const data = await User.leaderboardByStakes(Number.parseInt(limit) || 10);
-      res.json(data);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  },
-
-  async leaderboardByWinRate(req, res) {
-    try {
-      const { limit } = req.query;
-      const data = await User.leaderboardByWinRate(Number.parseInt(limit) || 10);
-      res.json(data);
-    } catch (error) {
+      console.error("Sync leaderboard error:", error);
       res.status(500).json({ error: error.message });
     }
   },

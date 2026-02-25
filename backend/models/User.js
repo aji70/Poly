@@ -24,10 +24,27 @@ const User = {
   },
 
   /**
-   * Find by username
+   * Find by wallet address only (any chain). Use when address is unique (e.g. AI bots).
+   */
+  async findByAddressOnly(address) {
+    return await db("users").where({ address }).first();
+  },
+
+  /**
+   * Find by username (exact match)
    */
   async findByUsername(username) {
     return await db("users").where({ username }).first();
+  },
+
+  /**
+   * Find by username case-insensitive (for "username taken" checks).
+   * Returns existing user if any row has the same username ignoring case.
+   */
+  async findByUsernameIgnoreCase(username) {
+    if (username == null || String(username).trim() === "") return null;
+    const normalized = String(username).trim().toLowerCase();
+    return await db("users").whereRaw("LOWER(TRIM(username)) = ?", [normalized]).first();
   },
 
   /**
@@ -39,6 +56,17 @@ const User = {
       .limit(limit)
       .offset(offset)
       .orderBy("id", "asc");
+  },
+
+  /**
+   * Get all users for a given chain (for syncing leaderboard from contract).
+   */
+  async findAllByChain(chain, { limit = 500 } = {}) {
+    const normalized = this.normalizeChain(chain);
+    return await db("users")
+      .where({ chain: normalized })
+      .select("id", "username", "address", "games_played", "game_won", "game_lost", "total_staked", "total_earned", "total_withdrawn")
+      .limit(Math.min(Number(limit) || 500, 1000));
   },
 
   /**
@@ -120,68 +148,121 @@ const User = {
   },
 
   // -------------------------
-  // 🏆 Leaderboards
+  // 🏆 Per-chain stats & leaderboards
   // -------------------------
 
   /**
-   * Top players by games won
+   * Normalize chain from query (chain name or chainId number) to DB value.
+   * Supports: BASE, CELO, POLYGON; 8453/84531 -> BASE, 42220/44787 -> CELO, 137/80001 -> POLYGON.
    */
-  async leaderboardByWins(limit = 10) {
-    return await db("users")
-      .select("id", "username", "games_played", "game_won", "game_lost")
-      .orderBy("game_won", "desc")
-      .limit(limit);
+  normalizeChain(chain) {
+    if (chain == null || String(chain).trim() === "") return "BASE";
+    const s = String(chain).trim().toUpperCase();
+    const n = Number(chain);
+    if (s === "BASE" || n === 8453 || n === 84531) return "BASE";
+    if (s === "CELO" || n === 42220 || n === 44787) return "CELO";
+    if (s === "POLYGON" || n === 137 || n === 80001) return "POLYGON";
+    return s;
+  },
+
+  /** Column names for per-chain stats (played, won). Only BASE, CELO, POLYGON have columns. */
+  chainColumns(normalizedChain) {
+    const c = String(normalizedChain || "").toUpperCase();
+    if (c === "BASE") return { played: "base_games_played", won: "base_games_won" };
+    if (c === "CELO") return { played: "celo_games_played", won: "celo_games_won" };
+    if (c === "POLYGON") return { played: "polygon_games_played", won: "polygon_games_won" };
+    return null;
   },
 
   /**
-   * Top players by earnings
+   * Record a finished game for a specific chain: all players get +1 games_played on that chain, winner gets +1 games_won.
+   * Call when a game ends with game.chain (e.g. from finishByTime / finishGameByNetWorthAndNotify).
    */
-  async leaderboardByEarnings(limit = 10) {
+  async recordChainGameResult(chain, winnerId, playerUserIds) {
+    const normalized = this.normalizeChain(chain);
+    const cols = this.chainColumns(normalized);
+    if (!cols) return;
+    const { played, won } = cols;
+    const winner = Number(winnerId);
+    const ids = [...new Set(playerUserIds.map(Number))].filter(Boolean);
+    for (const id of ids) {
+      try {
+        await db("users").where({ id }).increment(played, 1).update({ updated_at: db.fn.now() });
+        if (id === winner) {
+          await db("users").where({ id }).increment(won, 1).update({ updated_at: db.fn.now() });
+        }
+      } catch (err) {
+        // Skip if user row missing
+      }
+    }
+  },
+
+  /**
+   * Top players by games won on this chain (uses per-chain columns: celo_games_won, etc.)
+   */
+  async getLeaderboardByWins(chain, limit = 20) {
+    const normalized = this.normalizeChain(chain);
+    const cols = this.chainColumns(normalized);
+    if (!cols) {
+      return await db("users").where({ chain: normalized }).select("id", "username", "address").limit(0);
+    }
+    const { played, won } = cols;
     return await db("users")
-      .select(
-        "id",
-        "username",
-        "total_earned",
-        "total_staked",
-        "total_withdrawn"
-      )
+      .where({ chain: normalized })
+      .select("id", "username", "address", played + " as games_played", won + " as game_won")
+      .orderBy(won, "desc")
+      .orderBy(played, "desc")
+      .limit(Math.min(Number(limit) || 20, 100));
+  },
+
+  /**
+   * Top players by total earned (filtered by chain)
+   */
+  async getLeaderboardByEarnings(chain, limit = 20) {
+    const normalized = this.normalizeChain(chain);
+    return await db("users")
+      .where({ chain: normalized })
+      .select("id", "username", "address", "total_earned", "total_staked", "total_withdrawn")
       .orderBy("total_earned", "desc")
-      .limit(limit);
+      .limit(Math.min(Number(limit) || 20, 100));
   },
 
   /**
-   * Top players by staked amount
+   * Top players by total staked (filtered by chain)
    */
-  async leaderboardByStakes(limit = 10) {
+  async getLeaderboardByStakes(chain, limit = 20) {
+    const normalized = this.normalizeChain(chain);
     return await db("users")
-      .select(
-        "id",
-        "username",
-        "total_staked",
-        "total_earned",
-        "total_withdrawn"
-      )
+      .where({ chain: normalized })
+      .select("id", "username", "address", "total_staked", "total_earned", "total_withdrawn")
       .orderBy("total_staked", "desc")
-      .limit(limit);
+      .limit(Math.min(Number(limit) || 20, 100));
   },
 
   /**
-   * Win ratio leaderboard (wins / games played)
+   * Top players by win rate on this chain (uses per-chain columns; min 1 game on that chain).
    */
-  async leaderboardByWinRate(limit = 10) {
+  async getLeaderboardByWinRate(chain, limit = 20) {
+    const normalized = this.normalizeChain(chain);
+    const cols = this.chainColumns(normalized);
+    if (!cols) {
+      return await db("users").where({ chain: normalized }).select("id", "username", "address").limit(0);
+    }
+    const { played, won } = cols;
     return await db("users")
+      .where({ chain: normalized })
+      .where(played, ">", 0)
       .select(
         "id",
         "username",
-        "games_played",
-        "game_won",
-        "game_lost",
-        db.raw(
-          "CASE WHEN games_played > 0 THEN game_won / games_played ELSE 0 END as win_rate"
-        )
+        "address",
+        db.raw(`${played} AS games_played`),
+        db.raw(`${won} AS game_won`),
+        db.raw("0 AS game_lost"),
+        db.raw(`(CASE WHEN ${played} > 0 THEN (1.0 * ${won} / ${played}) ELSE 0 END) AS win_rate`)
       )
       .orderBy("win_rate", "desc")
-      .limit(limit);
+      .limit(Math.min(Number(limit) || 20, 100));
   },
 };
 
