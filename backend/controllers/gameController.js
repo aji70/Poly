@@ -283,9 +283,7 @@ const gameController = {
         id: contractGameId,
       } = req.body;
       const normalizedChain = User.normalizeChain(chain);
-      let user = await User.findByAddress(address, normalizedChain);
-      if (!user && normalizedChain !== "CELO") user = await User.findByAddress(address, "CELO");
-      if (!user && normalizedChain !== "BASE") user = await User.findByAddress(address, "BASE");
+      const user = await User.resolveUserByAddress(address, normalizedChain);
       if (!user) {
         return res
           .status(200)
@@ -794,9 +792,7 @@ export const create = async (req, res) => {
       chain,
     } = req.body;
     const normalizedChain = User.normalizeChain(chain);
-    let user = await User.findByAddress(address, normalizedChain);
-    if (!user && normalizedChain !== "CELO") user = await User.findByAddress(address, "CELO");
-    if (!user && normalizedChain !== "BASE") user = await User.findByAddress(address, "BASE");
+    const user = await User.resolveUserByAddress(address, normalizedChain);
     if (!user) {
       return res
         .status(200)
@@ -881,10 +877,10 @@ export const create = async (req, res) => {
 
 export const join = async (req, res) => {
   try {
-    const { address, code, symbol } = req.body;
+    const { address, code, symbol, chain } = req.body;
 
-    // find user
-    const user = await User.findByAddress(address);
+    // find user (by primary address or linked wallet)
+    const user = await User.resolveUserByAddress(address, chain || "BASE");
     if (!user) {
       return res
         .status(200)
@@ -1482,8 +1478,8 @@ export const addAIPlayers = async (req, res) => {
 
 export const leave = async (req, res) => {
   try {
-    const { address, code } = req.body;
-    const user = await User.findByAddress(address);
+    const { address, code, chain } = req.body;
+    const user = await User.resolveUserByAddress(address, chain || "BASE");
     if (!user) {
       return res
         .status(200)

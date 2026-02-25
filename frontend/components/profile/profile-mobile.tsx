@@ -13,6 +13,8 @@ import { formatUnits, type Address, type Abi } from 'viem';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useProfile } from '@/context/ProfileContext';
+import { useGuestAuthOptional } from '@/context/GuestAuthContext';
+import AccountLinkWallet from '@/components/auth/AccountLinkWallet';
 
 import { REWARD_CONTRACT_ADDRESSES, TYCOON_CONTRACT_ADDRESSES } from '@/constants/contracts';
 import { useRewardTokenAddresses } from '@/context/ContractProvider';
@@ -342,7 +344,23 @@ export default function ProfilePageMobile() {
     toast.success('Bio saved');
   };
 
+  const { guestUser } = useGuestAuthOptional() ?? {};
   if (!isConnected || loading || error || !userData) {
+    if (guestUser && !isConnected) {
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-[#010F10] via-[#0A1C1E] to-[#0E1415] px-4 pb-24">
+          <header className="sticky top-0 z-20 border-b border-white/5 bg-[#030c0d]/90 backdrop-blur-xl py-4">
+            <Link href="/" className="flex items-center gap-2 text-cyan-300/90 text-sm font-medium">
+              <ArrowLeft className="w-5 h-5" /> Back
+            </Link>
+          </header>
+          <main className="py-6">
+            <p className="text-white/80 mb-4">Logged in as <strong>{guestUser.username}</strong>. Connect your wallet to link it.</p>
+            <AccountLinkWallet />
+          </main>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#010F10] via-[#0A1C1E] to-[#0E1415] flex items-center justify-center px-4">
         <div className="text-center space-y-6">
@@ -383,6 +401,7 @@ export default function ProfilePageMobile() {
       </header>
 
       <main className="px-4 pt-6 max-w-xl mx-auto space-y-5">
+        <AccountLinkWallet />
         {/* Hero */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}

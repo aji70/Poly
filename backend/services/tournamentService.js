@@ -73,7 +73,7 @@ export async function registerPlayer(tournamentId, { userId, address, chain }, p
     user = await User.findById(userId);
     if (!user) throw new Error("User not found");
   } else if (address) {
-    user = await User.findByAddress(address, normalizedChain);
+    user = await User.resolveUserByAddress(address, normalizedChain);
     if (!user) throw new Error("User not found for this address on this chain");
   } else {
     throw new Error("userId or address required");
