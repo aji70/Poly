@@ -117,7 +117,7 @@ export default function CreateTournamentPage() {
             <select
               id="chain"
               value={chain}
-              onChange={(e) => setChain(e.target.value)}
+              onChange={(e) => setChain(e.target.value as "POLYGON" | "CELO" | "BASE")}
               className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
             >
               <option value="POLYGON">POLYGON</option>
