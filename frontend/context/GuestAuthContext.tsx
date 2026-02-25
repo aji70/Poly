@@ -3,9 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { apiClient } from "@/lib/api";
 import { ApiResponse } from "@/types/api";
-
-/** Chain to use for guest registration. Must match the app's primary network (navbar / wallet). */
-const GUEST_REGISTER_CHAIN = "POLYGON";
+import { appChain } from "@/config";
 
 export type GuestUser = {
   id: number;
@@ -67,7 +65,7 @@ export function GuestAuthProvider({ children }: { children: React.ReactNode }) {
       const res = await apiClient.post<ApiResponse & { data?: { token: string; user: GuestUser } }>("auth/guest-register", {
         username: username.trim(),
         password,
-        chain: GUEST_REGISTER_CHAIN,
+        chain: appChain,
       });
       const data = res?.data as any;
       if (data?.data?.token && data?.data?.user) {
