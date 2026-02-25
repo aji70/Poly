@@ -219,8 +219,13 @@ const AiBoard = ({
 
 const { data: contractGame } = useGetGameByCode(game.code);
 
-// Extract the on-chain game ID (it's a bigint now)
-const onChainGameId = contractGame?.id;
+// On-chain game ID: prefer contract read, fallback to backend's contract_game_id (so we don't send 0)
+const onChainGameId =
+  contractGame?.id ??
+  (game.contract_game_id != null && game.contract_game_id !== "" ? BigInt(game.contract_game_id) : undefined);
+
+// finalPosition = finishing rank (1 = winner, 2 = second) per contract; not board position (0-39)
+const endGameFinalPosition = endGameCandidate.winner ? 1 : 2;
 
 // Hook for ending an AI game and claiming rewards
 const {
@@ -231,10 +236,9 @@ const {
   txHash: endGameTxHash,
   reset: endGameReset,
 } = useEndAIGameAndClaim(
-  onChainGameId ?? BigInt(0),                    // gameId: bigint (use 0n as fallback if undefined)
-  endGameCandidate.position,              // finalPosition: number (uint8, 0-39)
-  BigInt(endGameCandidate.balance),       // finalBalance: bigint
-  // Use validWin: if winner has < 20 turns, pass false to prevent spam, but still show them as winner
+  onChainGameId ?? BigInt(0), // fallback only for hook stability; do not call write when 0
+  endGameFinalPosition,
+  BigInt(endGameCandidate.balance),
   endGameCandidate.winner ? (endGameCandidate.validWin !== false) : false
 );
   
