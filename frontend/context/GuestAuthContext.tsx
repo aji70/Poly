@@ -4,6 +4,9 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { apiClient } from "@/lib/api";
 import { ApiResponse } from "@/types/api";
 
+/** Chain to use for guest registration. Must match the app's primary network (navbar / wallet). */
+const GUEST_REGISTER_CHAIN = "POLYGON";
+
 export type GuestUser = {
   id: number;
   username: string;
@@ -61,7 +64,11 @@ export function GuestAuthProvider({ children }: { children: React.ReactNode }) {
 
   const registerGuest = useCallback(async (username: string, password: string) => {
     try {
-      const res = await apiClient.post<ApiResponse & { data?: { token: string; user: GuestUser } }>("auth/guest-register", { username: username.trim(), password });
+      const res = await apiClient.post<ApiResponse & { data?: { token: string; user: GuestUser } }>("auth/guest-register", {
+        username: username.trim(),
+        password,
+        chain: GUEST_REGISTER_CHAIN,
+      });
       const data = res?.data as any;
       if (data?.data?.token && data?.data?.user) {
         if (typeof window !== "undefined") localStorage.setItem(TOKEN_KEY, data.data.token);
