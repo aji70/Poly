@@ -32,10 +32,11 @@ export async function createTournament(data) {
     prize_pool_wei = null,
     prize_distribution = null,
     registration_deadline = null,
-    chain = "BASE",
+    chain,
   } = data;
 
   if (!creator_id || !name) throw new Error("creator_id and name required");
+  if (chain == null || String(chain).trim() === "") throw new Error("chain is required (e.g. POLYGON, BASE, CELO)");
   const max = Math.min(256, Math.max(2, Number(max_players) || 32));
   const min = Math.max(2, Math.min(max, Number(min_players) || 2));
 
@@ -72,7 +73,7 @@ export async function registerPlayer(tournamentId, { userId, address, chain }, p
     user = await User.findById(userId);
     if (!user) throw new Error("User not found");
   } else if (address) {
-    user = await User.findByAddress(address, normalizedChain) || (await db("users").whereRaw("LOWER(linked_wallet_address) = ?", [String(address).toLowerCase()]).first());
+    user = await User.findByAddress(address, normalizedChain);
     if (!user) throw new Error("User not found for this address on this chain");
   } else {
     throw new Error("userId or address required");
@@ -82,9 +83,8 @@ export async function registerPlayer(tournamentId, { userId, address, chain }, p
 
   const already = await TournamentEntry.hasEntry(tournamentId, { userId: user.id, address: user.address });
   if (already) throw new Error("Already registered for this tournament");
-  const linkedAddr = user.linked_wallet_address;
-  if (linkedAddr) {
-    const byLinked = await TournamentEntry.findByTournamentAndAddress(tournamentId, linkedAddr);
+  if (user.linked_wallet_address) {
+    const byLinked = await TournamentEntry.findByTournamentAndAddress(tournamentId, user.linked_wallet_address);
     if (byLinked) throw new Error("This wallet is already registered");
   }
 
@@ -153,11 +153,10 @@ export async function generateBracket(tournamentId) {
     await TournamentMatch.create(row);
   }
 
-  const round0Matches = await TournamentMatch.findByTournamentAndRound(tournamentId, 0);
   for (let r = 1; r < numRounds; r++) {
-    const matchesInRound = size / Math.pow(2, r + 1);
+    const prevRoundMatches = await TournamentMatch.findByTournamentAndRound(tournamentId, r - 1);
+    const matchesInRound = prevRoundMatches.length / 2;
     for (let m = 0; m < matchesInRound; m++) {
-      const prevRoundMatches = await TournamentMatch.findByTournamentAndRound(tournamentId, r - 1);
       const slotAPrevId = prevRoundMatches[m * 2]?.id;
       const slotBPrevId = prevRoundMatches[m * 2 + 1]?.id;
       await TournamentMatch.create({
@@ -389,7 +388,7 @@ export async function onGameFinished(gameId) {
   if (finalCompleted) {
     await Tournament.update(match.tournament_id, { status: "COMPLETED" });
     const t = await Tournament.findById(match.tournament_id);
-    if (t.prize_source !== "NO_POOL" && (t.prize_pool_wei > 0 || t.entry_fee_wei > 0)) {
+    if (t.prize_source !== "NO_POOL" && (Number(t.prize_pool_wei) > 0 || Number(t.entry_fee_wei) > 0)) {
       try {
         const { executePayouts } = await import("./tournamentPayoutService.js");
         await executePayouts(match.tournament_id);

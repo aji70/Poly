@@ -25,6 +25,7 @@ import {
   isContractConfigured,
 } from "../services/tycoonContract.js";
 import { ensureUserHasContractPassword } from "../utils/ensureContractAuth.js";
+import { onGameFinished as tournamentOnGameFinished } from "../services/tournamentService.js";
 
 // AI bot addresses (must match frontend) — used to create DB players for guest AI games so we have 2+ players from the start.
 const AI_ADDRESSES = [
@@ -181,6 +182,10 @@ export async function finishGameByNetWorthAndNotify(io, game) {
     .update({ ...updatePayload, updated_at: db.fn.now() });
 
   if (rowCount === 0) return null;
+
+  tournamentOnGameFinished(game.id).catch((err) =>
+    logger.warn({ err: err?.message, gameId: game.id }, "tournament onGameFinished failed")
+  );
 
   const playerUserIds = (result.net_worths || []).map((n) => n.user_id).filter(Boolean);
   User.recordChainGameResult(game.chain || "BASE", result.winner_id, playerUserIds).catch((err) =>
@@ -518,6 +523,10 @@ const gameController = {
           data: { game: updated, winner_id: updated?.winner_id, valid_win: true },
         });
       }
+
+      tournamentOnGameFinished(game.id).catch((err) =>
+        logger.warn({ err: err?.message, gameId: game.id }, "tournament onGameFinished failed")
+      );
 
       const playerUserIds = (result.net_worths || []).map((n) => n.user_id).filter(Boolean);
       User.recordChainGameResult(game.chain || "BASE", result.winner_id, playerUserIds).catch((err) =>
