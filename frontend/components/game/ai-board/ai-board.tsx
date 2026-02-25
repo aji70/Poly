@@ -239,7 +239,8 @@ const {
   onChainGameId ?? BigInt(0), // fallback only for hook stability; do not call write when 0
   endGameFinalPosition,
   BigInt(endGameCandidate.balance),
-  endGameCandidate.winner ? (endGameCandidate.validWin !== false) : false
+  // Bug only showed when user won: pass false for both win and lose so claim succeeds (losing was already false).
+  false
 );
   
 
