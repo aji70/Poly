@@ -1,16 +1,18 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import Image from 'next/image';
-import { BarChart2, Crown, Coins, Wallet, Ticket, ShoppingBag, Loader2, Send, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart2, Crown, Coins, Wallet, Ticket, ShoppingBag, Loader2, Send, ChevronDown, ChevronUp, Camera, Copy, Check, User, FileText, Pencil } from 'lucide-react';
 import Link from 'next/link';
 import avatar from '@/public/avatar.jpg';
 import { useAccount, useBalance, useReadContract, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { formatUnits, type Address, type Abi } from 'viem';
 import { toast } from 'react-toastify';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useProfile } from '@/context/ProfileContext';
 
-import { REWARD_CONTRACT_ADDRESSES, TYC_TOKEN_ADDRESS, USDC_TOKEN_ADDRESS, TYCOON_CONTRACT_ADDRESSES } from '@/constants/contracts';
+import { REWARD_CONTRACT_ADDRESSES, TYCOON_CONTRACT_ADDRESSES } from '@/constants/contracts';
+import { useRewardTokenAddresses } from '@/context/ContractProvider';
 import RewardABI from '@/context/abi/rewardabi.json';
 import TycoonABI from '@/context/abi/tycoonabi.json';
 
@@ -37,23 +39,88 @@ const getPerkMetadata = (perk: number) => {
   return data[perk] || { name: `Perk #${perk}`, icon: <div className="w-16 h-16 bg-gray-500/20 rounded-2xl flex items-center justify-center text-3xl">?</div> };
 };
 
+const MAX_AVATAR_SIZE = 1024 * 1024; // 1MB
+const MAX_AVATAR_DIM = 512;
+
+/** Contract User struct: id, username, playerAddress, registeredAt, gamesPlayed, gamesWon, gamesLost, totalStaked, totalEarned, totalWithdrawn, propertiesbought, propertiesSold */
+function parseUserFromContract(data: unknown, username: string, walletAddress: string | undefined): {
+  username: string;
+  shortAddress: string;
+  gamesPlayed: number;
+  gamesWon: number;
+  gamesLost: number;
+  winRate: string;
+  totalStaked: number;
+  totalEarned: number;
+  totalWithdrawn: number;
+  propertiesBought: number;
+  propertiesSold: number;
+  registeredAt: number;
+} | null {
+  if (!data) return null;
+  const d = data as Record<string, unknown> | unknown[];
+  const gamesPlayed = Array.isArray(d) ? Number(d[4] ?? 0) : Number((d as Record<string, unknown>).gamesPlayed ?? 0);
+  const gamesWon = Array.isArray(d) ? Number(d[5] ?? 0) : Number((d as Record<string, unknown>).gamesWon ?? 0);
+  const gamesLost = Array.isArray(d) ? Number(d[6] ?? 0) : Number((d as Record<string, unknown>).gamesLost ?? 0);
+  const totalStaked = Array.isArray(d) ? Number(d[7] ?? 0) : Number((d as Record<string, unknown>).totalStaked ?? 0);
+  const totalEarned = Array.isArray(d) ? Number(d[8] ?? 0) : Number((d as Record<string, unknown>).totalEarned ?? 0);
+  const totalWithdrawn = Array.isArray(d) ? Number(d[9] ?? 0) : Number((d as Record<string, unknown>).totalWithdrawn ?? 0);
+  const propertiesBought = Array.isArray(d) ? Number(d[10] ?? 0) : Number((d as Record<string, unknown>).propertiesbought ?? 0);
+  const propertiesSold = Array.isArray(d) ? Number(d[11] ?? 0) : Number((d as Record<string, unknown>).propertiesSold ?? 0);
+  const registeredAt = Array.isArray(d) ? Number(d[3] ?? 0) : Number((d as Record<string, unknown>).registeredAt ?? 0);
+  return {
+    username: username || (Array.isArray(d) ? String(d[1] ?? '') : String((d as Record<string, unknown>).username ?? '')) || 'Unknown',
+    shortAddress: walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '',
+    gamesPlayed,
+    gamesWon,
+    gamesLost,
+    winRate: gamesPlayed > 0 ? ((gamesWon / gamesPlayed) * 100).toFixed(1) + '%' : '0%',
+    totalStaked,
+    totalEarned,
+    totalWithdrawn,
+    propertiesBought,
+    propertiesSold,
+    registeredAt,
+  };
+}
+
+function formatStakeOrEarned(value: number): string {
+  if (value >= 1e18) return (value / 1e18).toFixed(2);
+  if (value >= 1e15) return (value / 1e18).toFixed(4);
+  return String(value);
+}
+
 export default function Profile() {
   const { address: walletAddress, isConnected, chainId } = useAccount();
+  const { profile, setAvatar, setDisplayName, setBio, setProfile } = useProfile();
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sendAddress, setSendAddress] = useState('');
   const [sendingTokenId, setSendingTokenId] = useState<bigint | null>(null);
+  const [selectedPerkForTransfer, setSelectedPerkForTransfer] = useState<bigint | null>(null);
   const [redeemingId, setRedeemingId] = useState<bigint | null>(null);
-  const [showVouchers, setShowVouchers] = useState(false); // ← New: toggle vouchers
+  const [showVouchers, setShowVouchers] = useState(false);
+  const [profileTab, setProfileTab] = useState<'stats' | 'about' | 'perks' | 'vouchers'>('stats');
+  const [copied, setCopied] = useState(false);
+  const [localDisplayName, setLocalDisplayName] = useState(profile?.displayName ?? '');
+  const [localBio, setLocalBio] = useState(profile?.bio ?? '');
+  const [editingBio, setEditingBio] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    setLocalDisplayName(profile?.displayName ?? '');
+    setLocalBio(profile?.bio ?? '');
+  }, [profile?.displayName, profile?.bio]);
+
+  const displayName = profile?.displayName?.trim() || null;
 
   const { writeContract, data: txHash, isPending: isWriting, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: txSuccess } = useWaitForTransactionReceipt({ hash: txHash });
 
   const { data: ethBalance } = useBalance({ address: walletAddress });
 
-  const tycTokenAddress = TYC_TOKEN_ADDRESS[chainId as keyof typeof TYC_TOKEN_ADDRESS];
-  const usdcTokenAddress = USDC_TOKEN_ADDRESS[chainId as keyof typeof USDC_TOKEN_ADDRESS];
+  const { tycAddress: tycTokenAddress, usdcAddress: usdcTokenAddress } = useRewardTokenAddresses();
   const tycoonAddress = TYCOON_CONTRACT_ADDRESSES[chainId as keyof typeof TYCOON_CONTRACT_ADDRESSES];
   const rewardAddress = REWARD_CONTRACT_ADDRESSES[chainId as keyof typeof REWARD_CONTRACT_ADDRESSES] as Address | undefined;
 
@@ -170,15 +237,10 @@ export default function Profile() {
 
   React.useEffect(() => {
     if (playerData && username) {
-      const d = playerData as any;
-      setUserData({
-        username: username || 'Unknown',
-        address: walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '',
-        gamesPlayed: Number(d.gamesPlayed || 0),
-        wins: Number(d.gamesWon || 0),
-        winRate: d.gamesPlayed > 0 ? ((Number(d.gamesWon) / Number(d.gamesPlayed)) * 100).toFixed(1) + '%' : '0%',
-        totalEarned: Number(d.totalEarned || 0),
-      });
+      const parsed = parseUserFromContract(playerData, username as string, walletAddress);
+      if (parsed) {
+        setUserData(parsed);
+      }
       setLoading(false);
     } else if (playerData === null && !loading) {
       setError('No player data found');
@@ -216,9 +278,70 @@ export default function Profile() {
       reset();
       setSendingTokenId(null);
       setRedeemingId(null);
+      setSelectedPerkForTransfer(null);
       tycBalance.refetch();
     }
   }, [txSuccess, txHash, reset, tycBalance]);
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please choose an image file (PNG, JPG, etc.)');
+      return;
+    }
+    if (file.size > MAX_AVATAR_SIZE) {
+      toast.error('Image must be under 1MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const img = new window.Image();
+      img.onload = () => {
+        const scale = Math.min(1, MAX_AVATAR_DIM / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          setAvatar(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        const resized = canvas.toDataURL('image/jpeg', 0.85);
+        setAvatar(resized);
+        toast.success('Profile photo updated!');
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const copyAddress = () => {
+    if (!walletAddress) return;
+    navigator.clipboard.writeText(walletAddress);
+    setCopied(true);
+    toast.success('Address copied');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const saveDisplayName = () => {
+    const trimmed = localDisplayName.trim() || null;
+    setDisplayName(trimmed);
+    setProfile({ displayName: trimmed });
+    toast.success('Display name saved');
+  };
+
+  const saveBio = () => {
+    const trimmed = localBio.trim() || null;
+    setBio(trimmed);
+    setProfile({ bio: trimmed });
+    toast.success('Bio saved');
+  };
 
   if (!isConnected || loading || error || !userData) {
     return (
@@ -244,189 +367,351 @@ export default function Profile() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#010F10] via-[#0A1C1E] to-[#0E1415] text-[#F0F7F7]">
-      {/* Compact Header */}
-      <header className="border-b border-cyan-900/30 backdrop-blur-md">
-        <div className="container mx-auto px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="text-[#00F0FF] font-medium hover:gap-2 flex items-center gap-1 transition-all">
-            ← Back
+    <div className="min-h-screen text-[#F0F7F7] profile-page">
+      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+
+      {/* Ambient background */}
+      <div className="fixed inset-0 -z-10 bg-[#030c0d]" />
+      <div className="fixed inset-0 -z-10 bg-gradient-to-b from-cyan-950/25 via-transparent to-transparent" />
+      <div className="fixed inset-0 -z-10 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(0,240,255,0.08),transparent_50%)]" />
+
+      <header className="sticky top-0 z-20 border-b border-white/5 bg-[#030c0d]/90 backdrop-blur-xl">
+        <div className="container mx-auto px-4 sm:px-6 py-4 flex items-center justify-between max-w-5xl">
+          <Link href="/" className="flex items-center gap-2 text-cyan-300/90 hover:text-cyan-200 transition text-sm font-medium">
+            <span className="w-8 h-8 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">←</span>
+            Back
           </Link>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-[#00F0FF] to-cyan-400 bg-clip-text text-transparent">
-            Profile
-          </h1>
-          <div className="w-16" />
+          <h1 className="text-lg font-semibold text-white/90 tracking-tight">My Profile</h1>
+          <div className="w-20" />
         </div>
       </header>
 
-      <main className="container mx-auto px-6 py-8 max-w-7xl">
-        {/* Compact Player Info + Balances */}
-        <div className="glass-card rounded-3xl p-6 mb-8 border border-cyan-500/20">
-          <div className="flex flex-col sm:flex-row items-center gap-6">
-            <div className="relative">
-              <div className="w-20 h-20 rounded-full overflow-hidden ring-4 ring-[#00F0FF] ring-offset-4 ring-offset-transparent">
-                <Image src={avatar} alt="Avatar" fill className="object-cover" />
-              </div>
-              <div className="absolute -bottom-1 -right-1 bg-gradient-to-br from-yellow-400 to-amber-500 p-2 rounded-xl">
-                <Crown className="w-5 h-5 text-black" />
-              </div>
-            </div>
-
-            <div className="flex-1 text-center sm:text-left">
-              <h2 className="text-3xl font-bold bg-gradient-to-r from-[#00F0FF] to-cyan-300 bg-clip-text text-transparent">
-                {userData.username}
-              </h2>
-              <p className="text-gray-400 font-mono text-sm mt-1">{userData.address}</p>
-            </div>
-
-            {/* Balances */}
-            <div className="flex gap-4">
-              <div className="text-center">
-                <p className="text-gray-500 text-xs">TYC</p>
-                <p className="text-xl font-bold">
-                  {tycBalance.isLoading ? '...' : Number(tycBalance.data?.formatted || 0).toFixed(2)}
-                </p>
-              </div>
-              <div className="text-center">
-                <p className="text-gray-500 text-xs">USDC</p>
-                <p className="text-xl font-bold">
-                  {usdcBalance.isLoading ? '...' : Number(usdcBalance.data?.formatted || 0).toFixed(2)}
-                </p>
-              </div>
-              <div className="text-center">
-                <p className="text-gray-500 text-xs">ETH</p>
-                <p className="text-xl font-bold">{ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0'}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Compact Stats Badges */}
-          <div className="flex flex-wrap gap-4 mt-6 justify-center sm:justify-start">
-            <div className="bg-white/5 rounded-xl px-4 py-2 border border-white/10">
-              <p className="text-xs text-gray-400">Games</p>
-              <p className="font-bold">{userData.gamesPlayed}</p>
-            </div>
-            <div className="bg-white/5 rounded-xl px-4 py-2 border border-white/10">
-              <p className="text-xs text-gray-400">Wins</p>
-              <p className="font-bold text-green-400">{userData.wins} ({userData.winRate})</p>
-            </div>
-            <div className="bg-white/5 rounded-xl px-4 py-2 border border-white/10">
-              <p className="text-xs text-gray-400">Earned</p>
-              <p className="font-bold text-emerald-400">{userData.totalEarned} BLOCK</p>
-            </div>
-          </div>
-        </div>
-
-        {/* MAIN: Collectibles (Prominent) */}
-        <section className="mb-12">
-          <h3 className="text-3xl font-bold mb-6 flex items-center gap-3 justify-center sm:justify-start">
-            <ShoppingBag className="w-10 h-10 text-[#00F0FF]" />
-            <span className="bg-gradient-to-r from-[#00F0FF] to-cyan-400 bg-clip-text text-transparent">
-              My Perks ({ownedCollectibles.length})
-            </span>
-          </h3>
-
-          {ownedCollectibles.length > 0 && (
-            <div className="glass-card rounded-2xl p-6 mb-8 border border-purple-500/30 max-w-2xl mx-auto">
-              <label className="text-sm text-gray-400 mb-2 block text-center">Transfer a perk</label>
-              <input
-                type="text"
-                placeholder="0x0000...0000"
-                value={sendAddress}
-                onChange={(e) => setSendAddress(e.target.value.trim())}
-                className="w-full px-5 py-3 bg-black/40 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 transition"
-              />
-            </div>
-          )}
-
-          {ownedCollectibles.length === 0 ? (
-            <div className="text-center py-16">
-              <ShoppingBag className="w-32 h-32 text-gray-600 mx-auto mb-6 opacity-40" />
-              <p className="text-xl text-gray-500">No perks yet — time to hit the shop!</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-8">
-              {ownedCollectibles.map((item) => (
-                <motion.div
-                  key={item.tokenId.toString()}
-                  whileHover={{ scale: 1.12, y: -8 }}
-                  className="group"
+      <main className="container mx-auto px-4 sm:px-6 py-8 sm:py-12 max-w-5xl">
+        {/* Hero card — focal point */}
+        <motion.section
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="relative rounded-3xl overflow-hidden mb-8 sm:mb-10 profile-hero"
+        >
+          <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/10 via-transparent to-teal-500/10" />
+          <div className="absolute inset-0 border border-cyan-500/20 rounded-3xl" />
+          <div className="relative p-6 sm:p-8">
+            <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-8">
+              <div className="relative group shrink-0">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="relative w-28 h-28 sm:w-32 sm:h-32 rounded-2xl overflow-hidden shadow-[0_0_40px_rgba(0,240,255,0.15)] focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-2 focus:ring-offset-[#030c0d] block"
                 >
-                  <div className="glass-card rounded-3xl p-8 text-center border border-[#003B3E] group-hover:border-[#00F0FF] transition-all duration-300 shadow-xl">
-                    {item.icon}
-                    <h4 className="mt-4 font-bold text-lg">{item.name}</h4>
-                    {item.isTiered && item.strength > 0 && (
-                      <p className="text-cyan-300 text-sm mt-1">Tier {item.strength}</p>
-                    )}
-                    <button
-                      onClick={() => handleSend(item.tokenId)}
-                      disabled={!sendAddress || !/^0x[a-fA-F0-9]{40}$/i.test(sendAddress) || sendingTokenId === item.tokenId || isWriting || isConfirming}
-                      className="mt-5 w-full py-3 rounded-xl font-semibold bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Send className="w-4 h-4" />
-                      {sendingTokenId === item.tokenId && (isWriting || isConfirming) ? 'Sending...' : 'Send'}
-                    </button>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-        </section>
+                  {profile?.avatar ? (
+                    <img src={profile.avatar} alt="Profile" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="absolute inset-0 [&>img]:object-cover">
+                      <Image src={avatar} alt="Avatar" width={128} height={128} className="w-full h-full object-cover" />
+                    </span>
+                  )}
+                  <span className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="w-12 h-12 rounded-full bg-cyan-500/30 flex items-center justify-center">
+                      <Camera className="w-6 h-6 text-white" />
+                    </span>
+                  </span>
+                </button>
+                <div className="absolute -bottom-2 -right-2 w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg border-2 border-[#030c0d]">
+                  <Crown className="w-5 h-5 text-black" />
+                </div>
+              </div>
 
-        {/* Collapsed Vouchers Section */}
-        <section>
-          <button
-            onClick={() => setShowVouchers(!showVouchers)}
-            className="w-full glass-card rounded-2xl p-6 mb-4 border border-amber-600/30 flex items-center justify-between hover:border-amber-500/50 transition-all"
-          >
-            <div className="flex items-center gap-4">
-              <Ticket className="w-10 h-10 text-amber-400" />
-              <div className="text-left">
-                <h3 className="text-2xl font-bold bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">
-                  Reward Vouchers ({myVouchers.length})
-                </h3>
-                <p className="text-gray-400 text-sm">
-                  {showVouchers ? 'Hide' : 'Click to view and redeem'}
-                </p>
+              <div className="flex-1 w-full text-center sm:text-left min-w-0">
+                <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight drop-shadow-sm">
+                  {userData.username}
+                </h2>
+                {displayName && (
+                  <p className="text-cyan-300/80 text-sm mt-1">"{displayName}"</p>
+                )}
+                {userData.registeredAt > 0 && (
+                  <p className="text-slate-500 text-xs mt-1">
+                    Member since {new Date(userData.registeredAt * 1000).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mt-4">
+                  <span className="text-slate-400 font-mono text-xs sm:text-sm truncate max-w-full">{userData.shortAddress || walletAddress}</span>
+                  <button
+                    type="button"
+                    onClick={copyAddress}
+                    className="p-2 rounded-lg bg-white/5 hover:bg-cyan-500/20 border border-white/10 text-cyan-300 transition shrink-0"
+                    title="Copy address"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-row sm:flex-col gap-3 shrink-0 w-full sm:w-auto justify-center sm:justify-start">
+                {[
+                  { label: 'TYC', value: tycBalance.isLoading ? '...' : Number(tycBalance.data?.formatted || 0).toFixed(2), color: 'cyan' },
+                  { label: 'USDC', value: usdcBalance.isLoading ? '...' : Number(usdcBalance.data?.formatted || 0).toFixed(2), color: 'emerald' },
+                  { label: 'Celo', value: ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0', color: 'slate' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className={`flex-1 sm:flex-none text-center py-3 px-4 rounded-2xl min-w-0 balance-pill balance-${color}`}>
+                    <p className="text-[10px] sm:text-xs font-medium uppercase tracking-wider text-white/50">{label}</p>
+                    <p className="text-base sm:text-lg font-bold text-white truncate mt-0.5">{value}</p>
+                  </div>
+                ))}
               </div>
             </div>
-            {showVouchers ? <ChevronUp className="w-8 h-8 text-amber-400" /> : <ChevronDown className="w-8 h-8 text-amber-400" />}
-          </button>
+          </div>
+        </motion.section>
 
-          <AnimatePresence>
-            {showVouchers && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.4 }}
-                className="overflow-hidden"
+        {/* Game stats | About you | My Perks | Reward Vouchers — one line of tabs, content below */}
+        <section className="mb-8">
+          <div className="flex flex-wrap gap-2 mb-4">
+            {[
+              { id: 'stats' as const, label: 'Game stats', icon: BarChart2 },
+              { id: 'about' as const, label: 'About you', icon: User },
+              { id: 'perks' as const, label: 'My Perks', icon: ShoppingBag, badge: ownedCollectibles.length },
+              { id: 'vouchers' as const, label: 'Reward Vouchers', icon: Ticket, badge: myVouchers.length },
+            ].map(({ id, label, icon: Icon, badge }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setProfileTab(id)}
+                className={`flex-1 min-w-[120px] flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl font-semibold text-sm transition-all ${
+                  profileTab === id
+                    ? 'bg-cyan-500/20 border-2 border-cyan-500/50 text-cyan-200'
+                    : 'bg-white/5 border border-white/10 text-white/70 hover:border-white/20 hover:text-white/90'
+                }`}
               >
-                {myVouchers.length === 0 ? (
-                  <div className="text-center py-12 glass-card rounded-2xl border border-amber-600/20">
-                    <Ticket className="w-20 h-20 text-gray-600 mx-auto mb-4 opacity-50" />
-                    <p className="text-gray-500">No vouchers yet — keep winning games!</p>
+                <Icon className="w-4 h-4 shrink-0" />
+                {label}
+                {badge !== undefined && badge > 0 && (
+                  <span className="ml-1 min-w-[1.25rem] h-5 px-1.5 rounded-md bg-white/10 text-xs flex items-center justify-center">{badge}</span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          <div className="profile-card rounded-2xl border border-white/10 overflow-hidden min-h-[280px] max-h-[60vh] overflow-y-auto">
+            {profileTab === 'stats' && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-5 sm:p-6">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                  {[
+                    { icon: BarChart2, label: 'Games played', value: String(userData.gamesPlayed), accent: 'cyan' },
+                    { icon: Crown, label: 'Wins', value: String(userData.gamesWon), accent: 'amber', valueClass: 'text-amber-300' },
+                    { icon: Coins, label: 'Losses', value: String(userData.gamesLost), accent: 'slate', valueClass: 'text-slate-300' },
+                    { icon: BarChart2, label: 'Win rate', value: userData.winRate, accent: 'emerald', valueClass: 'text-emerald-300' },
+                  ].map(({ icon: Icon, label, value, accent, valueClass = 'text-white' }) => (
+                    <div key={label} className={`profile-stat stat-${accent} rounded-2xl p-4 flex items-center gap-3`}>
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 stat-icon">
+                        <Icon className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-medium text-white/50 uppercase tracking-wider">{label}</p>
+                        <p className={`font-bold text-base truncate ${valueClass}`}>{value}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                  {[
+                    { icon: Wallet, label: 'Total staked', value: formatStakeOrEarned(userData.totalStaked) + ' BLOCK', accent: 'cyan' },
+                    { icon: Coins, label: 'Total earned', value: formatStakeOrEarned(userData.totalEarned) + ' BLOCK', accent: 'emerald', valueClass: 'text-emerald-300' },
+                    { icon: Wallet, label: 'Total withdrawn', value: formatStakeOrEarned(userData.totalWithdrawn) + ' BLOCK', accent: 'slate', valueClass: 'text-slate-300' },
+                  ].map(({ icon: Icon, label, value, accent, valueClass = 'text-white' }) => (
+                    <div key={label} className={`profile-stat stat-${accent} rounded-2xl p-4 flex items-center gap-3`}>
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 stat-icon">
+                        <Icon className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-medium text-white/50 uppercase tracking-wider">{label}</p>
+                        <p className={`font-bold text-sm truncate ${valueClass}`}>{value}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { icon: BarChart2, label: 'Properties bought', value: String(userData.propertiesBought), accent: 'cyan' },
+                    { icon: BarChart2, label: 'Properties sold', value: String(userData.propertiesSold), accent: 'amber', valueClass: 'text-amber-300' },
+                  ].map(({ icon: Icon, label, value, accent, valueClass = 'text-white' }) => (
+                    <div key={label} className={`profile-stat stat-${accent} rounded-2xl p-4 flex items-center gap-3`}>
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 stat-icon">
+                        <Icon className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-medium text-white/50 uppercase tracking-wider">{label}</p>
+                        <p className={`font-bold text-base truncate ${valueClass}`}>{value}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+            {profileTab === 'about' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="p-6 sm:p-8"
+              >
+                <p className="text-xs font-medium text-cyan-400/90 uppercase tracking-widest mb-6">Tell us about yourself</p>
+                <div className="space-y-6 max-w-xl">
+                  <div>
+                    <label className="block text-sm font-medium text-white/70 mb-2">Display name</label>
+                    <div className="flex gap-3 rounded-2xl bg-white/5 border border-white/10 px-4 py-3.5 focus-within:border-cyan-500/40 focus-within:bg-white/[0.07] transition-all">
+                      <User className="w-5 h-5 text-cyan-400/80 shrink-0 mt-0.5" />
+                      <input
+                        type="text"
+                        placeholder="How should we call you?"
+                        value={localDisplayName}
+                        onChange={(e) => setLocalDisplayName(e.target.value)}
+                        onBlur={saveDisplayName}
+                        className="flex-1 bg-transparent text-white placeholder-slate-500 focus:outline-none text-base min-w-0"
+                      />
+                      <button type="button" onClick={saveDisplayName} className="shrink-0 px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 text-sm font-semibold transition-colors">Save</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-white/70 mb-2">Short bio</label>
+                    {editingBio ? (
+                      <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3.5 focus-within:border-cyan-500/40 focus-within:bg-white/[0.07] transition-all">
+                        <div className="flex gap-3">
+                          <FileText className="w-5 h-5 text-cyan-400/80 shrink-0 mt-0.5" />
+                          <textarea
+                            placeholder="A line or two about you — what you love, your play style, or anything you'd like others to see."
+                            value={localBio}
+                            onChange={(e) => setLocalBio(e.target.value)}
+                            rows={4}
+                            className="flex-1 bg-transparent text-white placeholder-slate-500 focus:outline-none text-base resize-none min-w-0 leading-relaxed"
+                            autoFocus
+                          />
+                        </div>
+                        <div className="flex justify-end gap-2 mt-3">
+                          <button type="button" onClick={() => setEditingBio(false)} className="px-4 py-2 rounded-xl bg-white/10 text-white/80 hover:bg-white/15 text-sm font-semibold transition-colors">Cancel</button>
+                          <button type="button" onClick={() => { saveBio(); setEditingBio(false); }} className="px-4 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 text-sm font-semibold transition-colors">Save bio</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3.5 flex items-start justify-between gap-3">
+                        <div className="flex gap-3 min-w-0 flex-1">
+                          <FileText className="w-5 h-5 text-cyan-400/80 shrink-0 mt-0.5" />
+                          <p className="text-base text-white/90 leading-relaxed whitespace-pre-wrap break-words">
+                            {localBio.trim() || <span className="text-slate-500">No bio yet.</span>}
+                          </p>
+                        </div>
+                        <button type="button" onClick={() => setEditingBio(true)} className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 text-sm font-semibold transition-colors">
+                          <Pencil className="w-4 h-4" />
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {profileTab === 'perks' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="p-5 sm:p-6"
+              >
+                {ownedCollectibles.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <div className="w-16 h-16 rounded-2xl bg-purple-500/10 flex items-center justify-center mx-auto mb-4">
+                      <ShoppingBag className="w-8 h-8 text-purple-400/60" />
+                    </div>
+                    <p className="text-slate-400 text-sm">No perks yet — visit the shop to collect.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                    {ownedCollectibles.map((item, i) => (
+                      <motion.div
+                        key={item.tokenId.toString()}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.02 }}
+                        whileHover={{ y: -2 }}
+                        className={`rounded-2xl p-4 text-center border transition-all bg-black/20 ${
+                          selectedPerkForTransfer === item.tokenId ? 'border-purple-500/50 ring-2 ring-purple-500/20' : 'border-white/10 hover:border-purple-500/30'
+                        }`}
+                      >
+                        {item.icon}
+                        <h4 className="mt-2 font-semibold text-white text-sm">{item.name}</h4>
+                        {item.isTiered && item.strength > 0 && <p className="text-cyan-300/90 text-xs mt-0.5">Tier {item.strength}</p>}
+                        {selectedPerkForTransfer === item.tokenId ? (
+                          <div className="mt-3 space-y-2 text-left">
+                            <label className="text-[10px] font-medium text-white/50 uppercase tracking-wider block">Send to address</label>
+                            <input
+                              type="text"
+                              placeholder="0x0000...0000"
+                              value={sendAddress}
+                              onChange={(e) => setSendAddress(e.target.value.trim())}
+                              className="w-full px-3 py-2 rounded-lg bg-black/40 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 text-xs border border-white/10"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSend(item.tokenId)}
+                                disabled={!sendAddress || !/^0x[a-fA-F0-9]{40}$/i.test(sendAddress) || sendingTokenId === item.tokenId || isWriting || isConfirming}
+                                className="flex-1 py-2 rounded-lg font-semibold text-xs bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 flex items-center justify-center gap-1.5 text-white"
+                              >
+                                {sendingTokenId === item.tokenId && (isWriting || isConfirming) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                                {sendingTokenId === item.tokenId && (isWriting || isConfirming) ? 'Sending...' : 'Send'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedPerkForTransfer(null)}
+                                className="px-3 py-2 rounded-lg font-medium text-xs bg-white/10 text-white/80 hover:bg-white/15"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPerkForTransfer(item.tokenId)}
+                            className="mt-3 w-full py-2 rounded-xl font-semibold text-xs bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 flex items-center justify-center gap-1.5 text-white"
+                          >
+                            <Send className="w-3 h-3" />
+                            Transfer
+                          </button>
+                        )}
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
+
+            {profileTab === 'vouchers' && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="p-5 sm:p-6"
+              >
+                {myVouchers.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <Ticket className="w-12 h-12 text-amber-400/30 mx-auto mb-3" />
+                    <p className="text-slate-500 text-sm">No vouchers yet — keep winning games!</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {myVouchers.map((voucher) => (
                       <motion.div
                         key={voucher.tokenId.toString()}
-                        initial={{ opacity: 0, y: 20 }}
+                        initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="glass-card rounded-3xl p-8 text-center border border-amber-600/40"
+                        className="rounded-2xl p-5 text-center border border-amber-500/20 bg-black/20"
                       >
-                        <Ticket className="w-20 h-20 text-amber-400 mx-auto mb-4" />
-                        <p className="text-3xl font-black text-amber-300 mb-6">{voucher.value} TYC</p>
+                        <Ticket className="w-10 h-10 text-amber-400 mx-auto mb-2" />
+                        <p className="text-lg font-bold text-amber-200 mb-3">{voucher.value} TYC</p>
                         <button
                           onClick={() => handleRedeemVoucher(voucher.tokenId)}
                           disabled={redeemingId === voucher.tokenId || isWriting || isConfirming}
-                          className="w-full py-3 rounded-xl font-bold bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black disabled:opacity-60 flex items-center justify-center gap-2 transition-all"
+                          className="w-full py-2.5 rounded-xl font-semibold text-sm bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black disabled:opacity-60 flex items-center justify-center gap-2"
                         >
-                          {redeemingId === voucher.tokenId && (isWriting || isConfirming) ? (
-                            <> <Loader2 className="w-5 h-5 animate-spin" /> Redeeming... </>
-                          ) : (
-                            <> <Coins className="w-5 h-5" /> Redeem </>
-                          )}
+                          {redeemingId === voucher.tokenId && (isWriting || isConfirming) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Coins className="w-4 h-4" />}
+                          {redeemingId === voucher.tokenId && (isWriting || isConfirming) ? 'Redeeming...' : 'Redeem'}
                         </button>
                       </motion.div>
                     ))}
@@ -434,15 +719,37 @@ export default function Profile() {
                 )}
               </motion.div>
             )}
-          </AnimatePresence>
+          </div>
         </section>
       </main>
 
       <style jsx global>{`
-        .glass-card {
-          background: rgba(14, 20, 21, 0.65);
+        .profile-page .profile-hero {
+          background: linear-gradient(135deg, rgba(6, 78, 89, 0.25) 0%, rgba(4, 47, 46, 0.2) 50%, rgba(15, 23, 42, 0.4) 100%);
+          backdrop-filter: blur(16px);
+          box-shadow: 0 4px 40px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 240, 255, 0.1);
+        }
+        .profile-page .balance-pill {
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          backdrop-filter: blur(8px);
+        }
+        .profile-page .balance-cyan { border-color: rgba(0, 240, 255, 0.15); box-shadow: inset 0 0 20px rgba(0, 240, 255, 0.05); }
+        .profile-page .balance-emerald { border-color: rgba(52, 211, 153, 0.15); box-shadow: inset 0 0 20px rgba(52, 211, 153, 0.05); }
+        .profile-page .balance-slate { border-color: rgba(255, 255, 255, 0.08); }
+        .profile-page .profile-stat {
+          background: rgba(15, 23, 42, 0.5);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          backdrop-filter: blur(8px);
+        }
+        .profile-page .stat-cyan .stat-icon { background: rgba(0, 240, 255, 0.12); color: rgb(34, 211, 238); }
+        .profile-page .stat-amber .stat-icon { background: rgba(251, 191, 36, 0.12); color: rgb(251, 191, 36); }
+        .profile-page .stat-emerald .stat-icon { background: rgba(52, 211, 153, 0.12); color: rgb(52, 211, 153); }
+        .profile-page .stat-slate .stat-icon { background: rgba(148, 163, 184, 0.12); color: rgb(148, 163, 184); }
+        .profile-page .profile-card {
+          background: rgba(15, 23, 42, 0.4);
+          border: 1px solid rgba(255, 255, 255, 0.06);
           backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
         }
       `}</style>
     </div>

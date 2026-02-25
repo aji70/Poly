@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import herobg from "@/public/heroBg.png";
 import Image from "next/image";
-import { Dices, Gamepad2 } from "lucide-react";
+import { Dices, Gamepad2, Wallet } from "lucide-react";
 import { TypeAnimation } from "react-type-animation";
 import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
@@ -13,6 +13,7 @@ import {
   usePreviousGameCode,
   useGetGameByCode,
 } from "@/context/ContractProvider";
+import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 import { toast } from "react-toastify";
 import { apiClient } from "@/lib/api";
 import { User as UserType } from "@/lib/types/users";
@@ -21,11 +22,16 @@ import { ApiResponse } from "@/types/api";
 const HeroSection: React.FC = () => {
   const router = useRouter();
   const { address, isConnecting } = useAccount();
+  const guestAuth = useGuestAuthOptional();
+  const guestUser = guestAuth?.guestUser ?? null;
 
   const [loading, setLoading] = useState(false);
-  const [inputUsername, setInputUsername] = useState(""); // Only for new users
+  const [inputUsername, setInputUsername] = useState("");
   const [localRegistered, setLocalRegistered] = useState(false);
   const [localUsername, setLocalUsername] = useState("");
+  const [guestUsername, setGuestUsername] = useState("");
+  const [guestPassword, setGuestPassword] = useState("");
+  const [guestLoading, setGuestLoading] = useState(false);
 
   const {
     write: registerPlayer,
@@ -43,6 +49,53 @@ const HeroSection: React.FC = () => {
   const { data: gameCode } = usePreviousGameCode(address);
 
   const { data: contractGame } = useGetGameByCode(gameCode);
+
+  const [backendGame, setBackendGame] = useState<{ status: string; is_ai?: boolean } | null>(null);
+  const [guestLastGame, setGuestLastGame] = useState<{ code: string; status: string; is_ai?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!gameCode || typeof gameCode !== "string") {
+      setBackendGame(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient
+      .get<ApiResponse>(`/games/code/${encodeURIComponent(gameCode.trim().toUpperCase())}`)
+      .then((res) => {
+        if (cancelled || !res?.data?.success || !res.data.data) return;
+        const data = res.data.data as { status: string; is_ai?: boolean };
+        setBackendGame(data);
+      })
+      .catch(() => {
+        if (!cancelled) setBackendGame(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [gameCode]);
+
+  // Guest: fetch "my games" so they can continue their last game (include is_ai for routing)
+  useEffect(() => {
+    if (!guestUser || address) {
+      setGuestLastGame(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient
+      .get<ApiResponse>("/games/my-games", { params: { limit: 10 } })
+      .then((res) => {
+        if (cancelled || !res?.data?.success || !Array.isArray(res.data.data)) return;
+        const games = res.data.data as { code: string; status: string; is_ai?: boolean }[];
+        const active = games.find((g) => g.status === "RUNNING");
+        setGuestLastGame(active ? { code: active.code, status: active.status, is_ai: active.is_ai } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setGuestLastGame(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [guestUser, address]);
 
   const [user, setUser] = useState<UserType | null>(null);
 
@@ -65,7 +118,7 @@ const HeroSection: React.FC = () => {
     const fetchUser = async () => {
       try {
         const res = await apiClient.get<ApiResponse>(
-          `/users/by-address/${address}?chain=Base`
+          `/users/by-address/${address}?chain=Celo`
         );
 
         if (!isActive) return;
@@ -92,20 +145,20 @@ const HeroSection: React.FC = () => {
     };
   }, [address]);
 
-  // Derived registration status
   const registrationStatus = useMemo(() => {
-    if (!address) return "disconnected";
+    if (address) {
+      const hasBackend = !!user;
+      const hasOnChain = !!isUserRegistered || localRegistered;
+      if (hasBackend && hasOnChain) return "fully-registered";
+      if (hasBackend && !hasOnChain) return "backend-only";
+      return "none";
+    }
+    if (guestUser) return "guest";
+    return "disconnected";
+  }, [address, user, isUserRegistered, localRegistered, guestUser]);
 
-    const hasBackend = !!user;
-    const hasOnChain = !!isUserRegistered || localRegistered;
-
-    if (hasBackend && hasOnChain) return "fully-registered";
-    if (hasBackend && !hasOnChain) return "backend-only";
-    return "none";
-  }, [address, user, isUserRegistered, localRegistered]);
-
-  // Best available username to display
   const displayUsername = useMemo(() => {
+    if (guestUser) return guestUser.username;
     return (
       user?.username ||
       localUsername ||
@@ -113,7 +166,7 @@ const HeroSection: React.FC = () => {
       inputUsername ||
       "Player"
     );
-  }, [user, localUsername, fetchedUsername, inputUsername]);
+  }, [guestUser, user, localUsername, fetchedUsername, inputUsername]);
 
   // Handle registration (on-chain + backend if needed)
   const handleRegister = async () => {
@@ -148,7 +201,7 @@ const HeroSection: React.FC = () => {
         const res = await apiClient.post<ApiResponse>("/users", {
           username: finalUsername,
           address,
-          chain: "Base",
+          chain: "Celo",
         });
 
         if (!res?.success) throw new Error("Failed to save user on backend");
@@ -198,12 +251,24 @@ const HeroSection: React.FC = () => {
   };
 
 const handleContinuePrevious = () => {
+  if (guestUser && guestLastGame) {
+    if (guestLastGame.status === "PENDING") {
+      router.push(`/game-waiting?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    } else if (guestLastGame.is_ai) {
+      router.push(`/ai-play?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    } else {
+      router.push(`/game-play?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    }
+    return;
+  }
   if (!gameCode) return;
 
-  if (contractGame?.ai) {
-    router.push(`/ai-play?gameCode=${gameCode}`);
+  // Prefer backend is_ai (source of truth for our games); fall back to contract
+  const isAi = backendGame?.is_ai ?? contractGame?.ai;
+  if (isAi) {
+    router.push(`/ai-play?gameCode=${encodeURIComponent(gameCode)}`);
   } else {
-    router.push(`/game-play?gameCode=${gameCode}`);
+    router.push(`/game-play?gameCode=${encodeURIComponent(gameCode)}`);
   }
 };
 
@@ -239,7 +304,7 @@ const handleContinuePrevious = () => {
 
       <main className="w-full h-full absolute top-0 left-0 z-2 bg-transparent flex flex-col lg:justify-center items-center gap-1">
         {/* Welcome Message */}
-        {(registrationStatus === "fully-registered" || registrationStatus === "backend-only") && !loading && (
+        {(registrationStatus === "fully-registered" || registrationStatus === "backend-only" || registrationStatus === "guest") && !loading && (
           <div className="mt-20 md:mt-28 lg:mt-0">
             <p className="font-orbitron lg:text-[24px] md:text-[20px] text-[16px] font-[700] text-[#00F0FF] text-center">
               Welcome back, {displayUsername}!
@@ -315,20 +380,81 @@ const handleContinuePrevious = () => {
         </div>
 
         <div className="z-1 w-full flex flex-col justify-center items-center mt-6 gap-4">
-          {/* Show input ONLY for completely new users */}
+          {/* Wallet: username input for new users */}
           {address && registrationStatus === "none" && !loading && (
-            <>
-              <input
-                type="text"
-                value={inputUsername}
-                onChange={(e) => setInputUsername(e.target.value)}
-                placeholder="Choose your tycoon name"
-                className="w-[80%] md:w-[260px] h-[45px] bg-[#0E1415] rounded-[12px] border-[1px] border-[#003B3E] outline-none px-3 text-[#17ffff] font-orbitron font-[400] text-[16px] text-center placeholder:text-[#455A64] placeholder:font-dmSans"
-              />
-            </>
+            <input
+              type="text"
+              value={inputUsername}
+              onChange={(e) => setInputUsername(e.target.value)}
+              placeholder="Choose your tycoon name"
+              className="w-[80%] md:w-[260px] h-[45px] bg-[#0E1415] rounded-[12px] border-[1px] border-[#003B3E] outline-none px-3 text-[#17ffff] font-orbitron font-[400] text-[16px] text-center placeholder:text-[#455A64] placeholder:font-dmSans"
+            />
           )}
 
-          {/* "Let's Go!" button for backend-only or none */}
+          {/* Guest: login/register form when no wallet and not guest yet */}
+          {!address && registrationStatus === "disconnected" && !loading && (
+            <div className="w-[80%] md:w-[320px] flex flex-col gap-3 p-4 rounded-xl bg-[#0E1415]/90 border border-[#003B3E]">
+              <p className="text-[#00F0FF] font-orbitron text-sm font-bold text-center">Play without a wallet</p>
+              <input
+                type="text"
+                value={guestUsername}
+                onChange={(e) => setGuestUsername(e.target.value)}
+                placeholder="Username"
+                className="h-[42px] bg-[#010F10] rounded-lg border border-[#003B3E] px-3 text-[#17ffff] font-orbitron text-sm placeholder:text-[#455A64]"
+              />
+              <input
+                type="password"
+                value={guestPassword}
+                onChange={(e) => setGuestPassword(e.target.value)}
+                placeholder="Password"
+                className="h-[42px] bg-[#010F10] rounded-lg border border-[#003B3E] px-3 text-[#17ffff] font-orbitron text-sm placeholder:text-[#455A64]"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!guestUsername.trim() || !guestPassword) {
+                      toast.warn("Enter username and password");
+                      return;
+                    }
+                    setGuestLoading(true);
+                    const r = await guestAuth?.registerGuest(guestUsername.trim(), guestPassword);
+                    setGuestLoading(false);
+                    if (r?.success) {
+                      toast.success("Account created! You can play until you connect a wallet.");
+                    } else {
+                      toast.error(r?.message ?? "Registration failed");
+                    }
+                  }}
+                  disabled={guestLoading}
+                  className="flex-1 h-[42px] rounded-lg bg-[#003B3E] text-[#00F0FF] font-orbitron text-sm font-bold hover:bg-[#004B4F] disabled:opacity-60"
+                >
+                  {guestLoading ? "..." : "Register"}
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!guestUsername.trim() || !guestPassword) {
+                      toast.warn("Enter username and password");
+                      return;
+                    }
+                    setGuestLoading(true);
+                    const r = await guestAuth?.loginGuest(guestUsername.trim(), guestPassword);
+                    setGuestLoading(false);
+                    if (r?.success) {
+                      toast.success("Welcome back!");
+                    } else {
+                      toast.error(r?.message ?? "Login failed");
+                    }
+                  }}
+                  disabled={guestLoading}
+                  className="flex-1 h-[42px] rounded-lg bg-[#00F0FF] text-[#010F10] font-orbitron text-sm font-bold hover:opacity-90 disabled:opacity-60"
+                >
+                  {guestLoading ? "..." : "Login"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* "Let's Go!" for wallet users (backend-only or none) */}
           {address && registrationStatus !== "fully-registered" && !loading && (
             <button
               onClick={handleRegister}
@@ -360,11 +486,12 @@ const handleContinuePrevious = () => {
             </button>
           )}
 
-          {/* Action buttons for fully registered users */}
-          {address && registrationStatus === "fully-registered" && (
+          {/* Action buttons: wallet registered OR guest */}
+          {(address && registrationStatus === "fully-registered") || (registrationStatus === "guest" && guestUser) ? (
             <div className="flex flex-wrap justify-center items-center gap-4">
-              {/* Continue Previous Game - Highlighted */}
-              {gameCode && (contractGame?.status == 1) && (
+              {/* Continue Previous Game - Highlighted (wallet: from contract; guest: from my-games) */}
+              {((address && gameCode && (contractGame?.status == 1) && (!backendGame || (backendGame.status !== "FINISHED" && backendGame.status !== "COMPLETED" && backendGame.status !== "CANCELLED"))) ||
+                (guestUser && guestLastGame && guestLastGame.status !== "COMPLETED" && guestLastGame.status !== "CANCELLED")) && (
                 <button
                   onClick={handleContinuePrevious}
                   className="relative group w-[300px] h-[56px] bg-transparent border-none p-0 overflow-hidden cursor-pointer transition-transform group-hover:scale-105"
@@ -445,6 +572,15 @@ const handleContinuePrevious = () => {
                 </span>
               </button>
 
+              {guestUser && (
+                <button
+                  onClick={() => guestAuth?.logoutGuest()}
+                  className="text-[#869298] hover:text-[#00F0FF] font-dmSans text-xs"
+                >
+                  Sign out (guest)
+                </button>
+              )}
+
               {/* Challenge AI */}
               <button
                 onClick={() => router.push("/play-ai")}
@@ -470,11 +606,11 @@ const handleContinuePrevious = () => {
                 </span>
               </button>
             </div>
-          )}
+          ) : null}
 
-          {!address && (
+          {!address && !guestUser && (
             <p className="text-gray-400 text-sm text-center mt-4">
-              Please connect your wallet to continue.
+              Connect your wallet or play without a wallet above.
             </p>
           )}
         </div>

@@ -22,36 +22,29 @@ import { apiClient } from "@/lib/api";
 import BoardSquare from "./board-square";
 import CenterArea from "./center-area";
 import { ApiResponse } from "@/types/api";
-import { useEndAIGameAndClaim, useGetGameByCode, useTransferPropertyOwnership } from "@/context/ContractProvider";
+import { useEndAIGameAndClaim, useGetGameByCode } from "@/context/ContractProvider";
 import { BankruptcyModal } from "../modals/bankruptcy";
 import { CardModal } from "../modals/cards";
 import { PropertyActionModal } from "../modals/property-action";
 import CollectibleInventoryBar from "@/components/collectibles/collectibles-invetory";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, X } from "lucide-react";
-import { usePropertyActions } from "@/hooks/usePropertyActions"; // Adjust the import path as needed
+import { Sparkles, X, Crown, Trophy, Wallet, HeartHandshake } from "lucide-react";
+import { usePropertyActions } from "@/hooks/usePropertyActions";
+import { useGameTrades } from "@/hooks/useGameTrades";
+import TradeAlertPill from "../TradeAlertPill";
+import { GameDurationCountdown } from "../GameDurationCountdown";
 
-const MONOPOLY_STATS = {
-  landingRank: {
-    5: 1, 6: 2, 7: 3, 8: 4, 9: 5, 11: 6, 13: 7, 14: 8, 16: 9, 18: 10,
-    19: 11, 21: 12, 23: 13, 24: 14, 26: 15, 27: 16, 29: 17, 31: 18, 32: 19, 34: 20, 37: 21, 39: 22,
-    1: 30, 2: 25, 3: 29, 4: 35, 12: 32, 17: 28, 22: 26, 28: 33, 33: 27, 36: 24, 38: 23,
-  },
-  colorGroups: {
-    brown: [1, 3],
-    lightblue: [6, 8, 9],
-    pink: [11, 13, 14],
-    orange: [16, 18, 19],
-    red: [21, 23, 24],
-    yellow: [26, 27, 29],
-    green: [31, 32, 34],
-    darkblue: [37, 39],
-    railroad: [5, 15, 25, 35],
-    utility: [12, 28],
-  },
-};
-
-const BUILD_PRIORITY = ["orange", "red", "yellow", "pink", "lightblue", "green", "brown", "darkblue"];
+/** Convert dice total (2–12) to die1+die2 for display when we only have the total (e.g. from API). */
+function totalToDice(total: number): { die1: number; die2: number; total: number } {
+  const t = Math.max(2, Math.min(12, Math.round(total)));
+  if (t === 2) return { die1: 1, die2: 1, total: 2 };
+  if (t === 12) return { die1: 6, die2: 6, total: 12 };
+  const die1 = Math.min(6, Math.max(1, Math.floor(t / 2)));
+  return { die1, die2: t - die1, total: t };
+}
+import { MONOPOLY_STATS, BOARD_SQUARES, ROLL_ANIMATION_MS, MOVE_ANIMATION_MS_PER_SQUARE, JAIL_POSITION, getDiceValues, BUILD_PRIORITY } from "../constants";
+import { getContractErrorMessage } from "@/lib/utils/contractErrors";
+import { isAIPlayer } from "@/utils/gameUtils";
 
 const calculateBuyScore = (
   property: Property,
@@ -117,36 +110,29 @@ const calculateBuyScore = (
   return Math.max(0, Math.min(95, score));
 };
 
-const BOARD_SQUARES = 40;
-const ROLL_ANIMATION_MS = 1200;
-const MOVE_ANIMATION_MS_PER_SQUARE = 250;
-
-const getDiceValues = (): { die1: number; die2: number; total: number } | null => {
-  const die1 = Math.floor(Math.random() * 6) + 1;
-  const die2 = Math.floor(Math.random() * 6) + 1;
-  const total = die1 + die2;
-  return total === 12 ? null : { die1, die2, total };
-};
-
-const JAIL_POSITION = 10;
-
-const isAIPlayer = (player: Player | undefined): boolean =>
-  player?.username?.toLowerCase().includes("ai_") ||
-  player?.username?.toLowerCase().includes("bot") ||
-  false;
-
 const AiBoard = ({
   game,
   properties,
   game_properties,
   me,
+  isGuest = false,
+  onFinishGameByTime,
+  onViewTrades,
 }: {
   game: Game;
   properties: Property[];
   game_properties: GameProperty[];
   me: Player | null;
+  isGuest?: boolean;
+  onFinishGameByTime?: () => Promise<void>;
+  onViewTrades?: () => void;
 }) => {
   const [players, setPlayers] = useState<Player[]>(game?.players ?? []);
+  const [gameTimeUp, setGameTimeUp] = useState(false);
+  const [winner, setWinner] = useState<Player | null>(null);
+  const [showExitPrompt, setShowExitPrompt] = useState(false);
+  const [claimAndLeaveInProgress, setClaimAndLeaveInProgress] = useState(false);
+  const timeUpHandledRef = useRef(false);
   const [roll, setRoll] = useState<{ die1: number; die2: number; total: number } | null>(null);
   const [isRolling, setIsRolling] = useState(false);
   const [pendingRoll, setPendingRoll] = useState(0);
@@ -174,18 +160,40 @@ const AiBoard = ({
   const lastToastMessage = useRef<string | null>(null);
   const rolledForPlayerId = useRef<number | null>(null);
   const [showBankruptcyModal, setShowBankruptcyModal] = useState(false);
+  const [jailChoiceRequired, setJailChoiceRequired] = useState(false);
+  const [turnEndScheduled, setTurnEndScheduled] = useState(false);
+  const [endByNetWorthStatus, setEndByNetWorthStatus] = useState<{ vote_count: number; required_votes: number; voters: Array<{ user_id: number; username: string }> } | null>(null);
+  const [endByNetWorthLoading, setEndByNetWorthLoading] = useState(false);
 
   const currentPlayerId = game.next_player_id ?? -1;
   const currentPlayer = players.find((p) => p.user_id === currentPlayerId);
 
   const isMyTurn = me?.user_id === currentPlayerId;
-  const isAITurn = isAIPlayer(currentPlayer);
+  const isAITurn = !!currentPlayer && isAIPlayer(currentPlayer);
+
+  const { tradeRequests = [] } = useGameTrades({
+    gameId: game?.id,
+    myUserId: me?.user_id,
+    players: game?.players ?? [],
+  });
+  const myIncomingTrades = useMemo(() => {
+    if (!me) return [];
+    return tradeRequests.filter(
+      (t: { target_player_id: number; status: string }) =>
+        t.target_player_id === me.user_id && t.status === "pending"
+    );
+  }, [tradeRequests, me]);
 
   const playerCanRoll = Boolean(
-    isMyTurn && currentPlayer && (currentPlayer.balance ?? 0) > 0
+    isMyTurn && currentPlayer && (currentPlayer.balance ?? 0) > 0 && !gameTimeUp
   );
 
-  const currentPlayerInJail = currentPlayer?.position === JAIL_POSITION && currentPlayer?.in_jail === true;
+  const currentPlayerInJail = currentPlayer?.position === JAIL_POSITION && Boolean(currentPlayer?.in_jail);
+
+  const meInJail = Boolean(
+    isMyTurn && me && Number(me.position) === JAIL_POSITION && me.in_jail
+  );
+  const canPayToLeaveJail = meInJail && (me?.balance ?? 0) >= 50;
 
   
 
@@ -193,11 +201,11 @@ const AiBoard = ({
     winner: Player | null;
     position: number;
     balance: bigint;
-  }>({ winner: null, position: 0, balance: BigInt(0) });
+    validWin?: boolean; // true if winner has >= 20 turns, false otherwise
+  }>({ winner: null, position: 0, balance: BigInt(0), validWin: true });
 
     // ── At the top of AiBoard component, with other hooks ──
 
-  const { write: transferOwnership, isPending: isCreatePending } = useTransferPropertyOwnership();
   const currentProperty = useMemo(() => {
     return currentPlayer?.position
       ? properties.find((p) => p.id === currentPlayer.position) ?? null
@@ -226,7 +234,8 @@ const {
   onChainGameId ?? BigInt(0),                    // gameId: bigint (use 0n as fallback if undefined)
   endGameCandidate.position,              // finalPosition: number (uint8, 0-39)
   BigInt(endGameCandidate.balance),       // finalBalance: bigint
-  !!endGameCandidate.winner               // isWin: boolean
+  // Use validWin: if winner has < 20 turns, pass false to prevent spam, but still show them as winner
+  endGameCandidate.winner ? (endGameCandidate.validWin !== false) : false
 );
   
 
@@ -243,20 +252,121 @@ const {
     );
   }
 
+  // Show toasts only for successful property purchases and the purple trade notification (toast.custom)
   const showToast = useCallback((message: string, type: "success" | "error" | "default" = "default") => {
-    if (message === lastToastMessage.current) return;
-    lastToastMessage.current = message;
-
-    toast.dismiss();
-    if (type === "success") toast.success(message);
-    else if (type === "error") toast.error(message);
-    else toast(message, { icon: "➤" });
+    if (type === "success" && (message.startsWith("You bought") || message.startsWith("AI bought") || (message.includes("bought") && message.endsWith("!")))) {
+      toast.success(message);
+    }
   }, []);
+
+  const handleGameTimeUp = useCallback(async () => {
+    if (timeUpHandledRef.current || game.status !== "RUNNING") return;
+    timeUpHandledRef.current = true;
+    setGameTimeUp(true);
+    try {
+      // Backend finishes the game (assigns winner) before we show the modal.
+      const res = await apiClient.post<{
+        success?: boolean;
+        data?: { winner_id: number; game?: { players?: Player[] }; valid_win?: boolean; winner_turn_count?: number };
+      }>(`/games/${game.id}/finish-by-time`);
+      const data = res?.data?.data;
+      const winnerId = data?.winner_id;
+      if (winnerId == null) {
+        throw new Error((res?.data as { error?: string })?.error ?? "Could not finish game by time");
+      }
+      const updatedPlayers = data?.game?.players ?? players;
+      const winnerPlayer = updatedPlayers.find((p) => p.user_id === winnerId) ?? null;
+      setWinner(winnerPlayer);
+      const myPosition = me?.position ?? 0;
+      const myBalance = BigInt(me?.balance ?? 0);
+      const validWin = data?.valid_win !== false;
+      if (winnerId === me?.user_id) {
+        setEndGameCandidate({ winner: me!, position: myPosition, balance: myBalance, validWin });
+      } else {
+        setEndGameCandidate({ winner: null, position: myPosition, balance: myBalance, validWin: true });
+      }
+      await onFinishGameByTime?.(); // invalidate & refetch so parent has updated game
+    } catch (e) {
+      console.error("Time up / finish-by-time failed:", e);
+      timeUpHandledRef.current = false;
+      setGameTimeUp(false);
+    }
+  }, [game.id, game.status, me, players, onFinishGameByTime]);
+
+  const handleFinalizeTimeUpAndLeave = useCallback(async () => {
+    setShowExitPrompt(false);
+    const isHumanWinner = winner?.user_id === me?.user_id;
+    try {
+      // 1) Claim on-chain first (winners and losers both call exit AI game to get rewards)
+      await endGame();
+      // 2) Then sync backend (mark game FINISHED). Both can call; backend is idempotent if already finished.
+      try {
+        await onFinishGameByTime?.();
+      } catch (backendErr: any) {
+        if (backendErr?.message?.includes("not running") || backendErr?.response?.data?.error === "Game is not running") {
+          // Game already finished. On-chain claim succeeded; ignore.
+        } else {
+          throw backendErr;
+        }
+      }
+      toast.success(isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!");
+      // Stay on modal; user chooses when to go home via "Go home" button
+    } catch (err: any) {
+      toast.error(getContractErrorMessage(err, "Something went wrong — try again later"));
+    } finally {
+      endGameReset();
+    }
+  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset]);
+
+  const handleClaimAndGoHome = useCallback(async () => {
+    setClaimAndLeaveInProgress(true);
+    const isHumanWinner = winner?.user_id === me?.user_id;
+    try {
+      // Guest: backend already claimed on-chain when finish-by-time ran; skip wallet call.
+      if (!isGuest) {
+        await endGame();
+      }
+      try {
+        await onFinishGameByTime?.();
+      } catch (backendErr: any) {
+        if (backendErr?.message?.includes("not running") || backendErr?.response?.data?.error === "Game is not running") {
+          // ignore
+        } else {
+          throw backendErr;
+        }
+      }
+      toast.success(isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!");
+      window.location.href = "/";
+    } catch (err: any) {
+      toast.error(getContractErrorMessage(err, "Something went wrong — try again later"));
+      setClaimAndLeaveInProgress(false);
+    } finally {
+      endGameReset();
+    }
+  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset]);
 
   // Sync players
   useEffect(() => {
     if (game?.players) setPlayers(game.players);
   }, [game?.players]);
+
+  // Only show winner when backend has marked the game FINISHED (same as mobile).
+  useEffect(() => {
+    if (!game || game.status !== "FINISHED" || game.winner_id == null) return;
+
+    const winnerPlayer = players.find((p) => p.user_id === game.winner_id) ?? (me?.user_id === game.winner_id ? me : null);
+    if (!winnerPlayer) return;
+
+    setWinner(winnerPlayer);
+    const turnCount = winnerPlayer.turn_count ?? 0;
+    const validWin = turnCount >= 20;
+    setEndGameCandidate({
+      winner: winnerPlayer,
+      position: winnerPlayer.position ?? 0,
+      balance: BigInt(winnerPlayer.balance ?? 0),
+      validWin,
+    });
+  }, [game?.status, game?.winner_id, players, me]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -285,7 +395,13 @@ const {
     setAnimatedPositions({});
     setHasMovementFinished(false);
     setStrategyRanThisTurn(false);
+    setTurnEndScheduled(false);
   }, [currentPlayerId]);
+
+  // Clear turnEndScheduled once it's no longer our turn (e.g. after refetch)
+  useEffect(() => {
+    if (!isMyTurn) setTurnEndScheduled(false);
+  }, [isMyTurn]);
 
   const lockAction = useCallback((type: "ROLL" | "END") => {
     if (actionLock) return false;
@@ -295,7 +411,7 @@ const {
 
   const unlockAction = useCallback(() => setActionLock(null), []);
 
-  const END_TURN = useCallback(async () => {
+  const END_TURN = useCallback(async (timedOut?: boolean) => {
     if (currentPlayerId === -1 || turnEndInProgress.current || !lockAction("END")) return;
 
     turnEndInProgress.current = true;
@@ -304,17 +420,18 @@ const {
       await apiClient.post("/game-players/end-turn", {
         user_id: currentPlayerId,
         game_id: game.id,
+        ...(timedOut === true && { timed_out: true }),
       });
-      showToast("Turn ended", "success");
-    } catch {
-      showToast("Failed to end turn", "error");
+      // Turn state visible on board — no toast
+    } catch (err) {
+      toast.error(getContractErrorMessage(err, "Failed to end turn"));
     } finally {
       unlockAction();
       turnEndInProgress.current = false;
     }
   }, [currentPlayerId, game.id, lockAction, unlockAction, showToast]);
 
-
+  // Per-turn roll timer removed: no countdown or auto-end turn.
 
 // ── Then your BUY_PROPERTY becomes: ──
 const BUY_PROPERTY = useCallback(async (isAiAction = false) => {
@@ -338,15 +455,7 @@ const BUY_PROPERTY = useCallback(async (isAiAction = false) => {
   }
 
   try {
-    // Show loading state
     showToast("Sending transaction...", "default");
-
-    // 1. On-chain minimal proof (counters update) - skip if AI is involved
-    if (!isAiAction) {
-      await transferOwnership('', buyerUsername);
-    }
-
-    // 2. Update backend
     await apiClient.post("/game-properties/buy", {
       user_id: currentPlayer.user_id,
       game_id: game.id,
@@ -360,29 +469,22 @@ const BUY_PROPERTY = useCallback(async (isAiAction = false) => {
       "success"
     );
 
+    setTurnEndScheduled(true);
     setBuyPrompted(false);
     landedPositionThisTurn.current = null;
     setTimeout(END_TURN, 800);
 
   } catch (err: any) {
     console.error("Buy failed:", err);
-    
-    const message = 
-      err.message?.includes("user rejected") 
-        ? "Transaction cancelled" 
-        : err.shortMessage || err.message || "Purchase failed";
-
-    showToast(message, "error");
+    toast.error(getContractErrorMessage(err, "Purchase failed"));
   }
 }, [
-  currentPlayer, 
-  justLandedProperty, 
-  actionLock, 
-  END_TURN, 
-  showToast, 
-  game.id, 
-  me?.username,
-  transferOwnership   // ← important dependency
+  currentPlayer,
+  justLandedProperty,
+  actionLock,
+  END_TURN,
+  showToast,
+  game.id,
 ]);
 
   const triggerLandingLogic = useCallback((newPosition: number, isSpecial = false) => {
@@ -403,7 +505,7 @@ const BUY_PROPERTY = useCallback(async (isAiAction = false) => {
       const isOwned = game_properties.some(gp => gp.property_id === newPosition);
       if (!isOwned && ["land", "railway", "utility"].includes(PROPERTY_ACTION(newPosition) || "")) {
         setBuyPrompted(true);
-        toast(`Landed on ${square.name}! ${isSpecial ? "(Special Move)" : ""}`, { icon: "✨" });
+        // Landed position visible — no toast
       }
     }
   }, 300);
@@ -440,10 +542,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
     const buyerUsername = buyerPlayer.username;
 
     try {
-      // 1. On-chain update
-      await transferOwnership(sellerUsername, buyerUsername);
-
-      // 2. Update backend
+      // Backend owns the transfer; game controller calls contract transferPropertyOwnership when needed
       const response = await apiClient.put<ApiResponse>(
         `/game-properties/${propertyId}`,
         {
@@ -458,12 +557,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
         throw new Error(response.data?.message || "Transfer failed");
       }
     } catch (error: any) {
-      const message =
-        error.response?.data?.message ||
-        error.message ||
-        "Failed to transfer property";
-
-      toast.error(message);
+      toast.error(getContractErrorMessage(error, "Failed to transfer property"));
       console.error("Property transfer failed:", error);
     }
   };
@@ -737,6 +831,75 @@ const endTurnAfterSpecialMove = useCallback(() => {
     }
   }, [isAITurn, currentPlayer, strategyRanThisTurn]);
 
+  const fetchGameState = useCallback(async () => {
+    try {
+      const res = await apiClient.get<ApiResponse>(`/games/code/${game.code}`);
+      if (res?.data?.success && res.data.data?.players) {
+        setPlayers(res.data.data.players);
+      }
+    } catch (err) {
+      console.error("Fetch game failed:", err);
+    }
+  }, [game.code]);
+
+  const isUntimed = !game?.duration || Number(game.duration) === 0;
+
+  const fetchEndByNetWorthStatus = useCallback(async () => {
+    if (!game?.id || !isUntimed) return;
+    try {
+      const res = await apiClient.post<ApiResponse>("/game-players/end-by-networth-status", { game_id: game.id });
+      if (res?.data?.success && res.data.data) {
+        setEndByNetWorthStatus({
+          vote_count: res.data.data.vote_count,
+          required_votes: res.data.data.required_votes,
+          voters: res.data.data.voters ?? [],
+        });
+      } else {
+        setEndByNetWorthStatus(null);
+      }
+    } catch {
+      setEndByNetWorthStatus(null);
+    }
+  }, [game?.id, isUntimed]);
+
+  const voteEndByNetWorth = useCallback(async () => {
+    if (!me?.user_id || !game?.id || !isUntimed) return;
+    setEndByNetWorthLoading(true);
+    try {
+      const res = await apiClient.post<ApiResponse>("/game-players/vote-end-by-networth", {
+        game_id: game.id,
+        user_id: me.user_id,
+      });
+      if (res?.data?.success && res.data.data) {
+        const data = res.data.data;
+        setEndByNetWorthStatus({
+          vote_count: data.vote_count,
+          required_votes: data.required_votes,
+          voters: data.voters ?? [],
+        });
+        if (data.all_voted) {
+          toast.success("Game ended by net worth");
+          await fetchGameState();
+          await onFinishGameByTime?.();
+        } else {
+          toast.success(`${data.vote_count}/${data.required_votes} voted to end by net worth`);
+        }
+      }
+    } catch (err: unknown) {
+      toast.error(getContractErrorMessage(err, "Failed to vote"));
+    } finally {
+      setEndByNetWorthLoading(false);
+    }
+  }, [game?.id, me?.user_id, isUntimed, fetchGameState, onFinishGameByTime]);
+
+  useEffect(() => {
+    if (!isUntimed || !game?.id) {
+      setEndByNetWorthStatus(null);
+      return;
+    }
+    fetchEndByNetWorthStatus();
+  }, [game?.id, isUntimed, fetchEndByNetWorthStatus, game?.history?.length]);
+
   const ROLL_DICE = useCallback(async (forAI = false) => {
     if (isRolling || actionLock || !lockAction("ROLL")) return;
 
@@ -759,7 +922,8 @@ const endTurnAfterSpecialMove = useCallback(() => {
       if (!player) return;
 
       const currentPos = player.position ?? 0;
-      const isInJail = player.in_jail === true && currentPos === JAIL_POSITION;
+      const isInJail = Boolean(player.in_jail) && currentPos === JAIL_POSITION;
+      const rolledDouble = value.die1 === value.die2;
 
       let newPos = currentPos;
       let shouldAnimate = false;
@@ -784,25 +948,96 @@ const endTurnAfterSpecialMove = useCallback(() => {
           }
         }
       } else {
-        showToast(
-          `${player.username || "Player"} is in jail — rolled ${value.die1} + ${value.die2} = ${value.total}`,
-          "default"
-        );
+        if (rolledDouble) {
+          const totalMove = value.total;
+          newPos = (currentPos + totalMove) % BOARD_SQUARES;
+          shouldAnimate = totalMove > 0;
+          if (shouldAnimate) {
+            const movePath: number[] = [];
+            for (let i = 1; i <= totalMove; i++) {
+              movePath.push((currentPos + i) % BOARD_SQUARES);
+            }
+            for (let i = 0; i < movePath.length; i++) {
+              await new Promise((resolve) => setTimeout(resolve, MOVE_ANIMATION_MS_PER_SQUARE));
+              setAnimatedPositions((prev) => ({
+                ...prev,
+                [playerId]: movePath[i],
+              }));
+            }
+          }
+        } else {
+          // Human in jail, no doubles — backend will return still_in_jail; show Pay / Use card / Stay
+          if (!forAI) {
+            setHasMovementFinished(true);
+            try {
+              const res = await apiClient.post<{ data?: { still_in_jail?: boolean; rolled?: number } }>(
+                "/game-players/change-position",
+                {
+                  user_id: playerId,
+                  game_id: game.id,
+                  position: currentPos,
+                  rolled: value.total,
+                  is_double: false,
+                }
+              );
+              const data = (res?.data ?? res) as { still_in_jail?: boolean; rolled?: number } | undefined;
+              await fetchGameState();
+              if (data?.still_in_jail) {
+                setJailChoiceRequired(true);
+                setRoll(value);
+              } else {
+                setTimeout(END_TURN, 1000);
+              }
+            } catch (err) {
+              toast.error(getContractErrorMessage(err, "Jail roll failed"));
+              END_TURN();
+            }
+            setIsRolling(false);
+            unlockAction();
+            return;
+          }
+          showToast(
+            `${player.username || "Player"} is in jail — rolled ${value.die1} + ${value.die2} = ${value.total} (no double)`,
+            "default"
+          );
+        }
       }
 
       setHasMovementFinished(true);
 
       try {
-        await apiClient.post("/game-players/change-position", {
-          user_id: playerId,
-          game_id: game.id,
-          position: newPos,
-          rolled: value.total + pendingRoll,
-          is_double: value.die1 === value.die2,
-        });
+        if (isInJail) landedPositionThisTurn.current = null;
+        const res = await apiClient.post<{ data?: { still_in_jail?: boolean } }>(
+          "/game-players/change-position",
+          {
+            user_id: playerId,
+            game_id: game.id,
+            position: newPos,
+            rolled: value.total + pendingRoll,
+            is_double: rolledDouble,
+          }
+        );
+        const data = (res?.data ?? res) as { still_in_jail?: boolean } | undefined;
+        if (data?.still_in_jail) {
+          if (!forAI) {
+            setJailChoiceRequired(true);
+            setRoll(value);
+            setPendingRoll(0);
+            await fetchGameState();
+            setIsRolling(false);
+            unlockAction();
+            return;
+          }
+          await apiClient.post("/game-players/stay-in-jail", { user_id: playerId, game_id: game.id });
+          await fetchGameState();
+          setPendingRoll(0);
+          setIsRolling(false);
+          unlockAction();
+          return;
+        }
 
         setPendingRoll(0);
-        landedPositionThisTurn.current = isInJail ? null : newPos;
+        landedPositionThisTurn.current = isInJail ? (rolledDouble ? newPos : null) : newPos;
 
         if (!isInJail) {
           showToast(
@@ -814,7 +1049,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
         if (forAI) rolledForPlayerId.current = currentPlayerId;
       } catch (err) {
         console.error("Move failed:", err);
-        showToast("Move failed", "error");
+        toast.error(getContractErrorMessage(err, "Move failed"));
         END_TURN();
       } finally {
         setIsRolling(false);
@@ -824,7 +1059,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
   }, [
     isRolling, actionLock, lockAction, unlockAction,
     currentPlayerId, me, players, pendingRoll, game.id,
-    showToast, END_TURN
+    showToast, END_TURN, fetchGameState,
   ]);
 
   useEffect(() => {
@@ -868,44 +1103,67 @@ const endTurnAfterSpecialMove = useCallback(() => {
     showToast
   ]);
 
-  useEffect(() => {
-    const history = game.history ?? [];
-    if (history.length <= prevHistoryLength.current) return;
+  // COMMENTED OUT: Card modal disabled
+  // useEffect(() => {
+  //   const history = game.history ?? [];
+  //   if (history.length <= prevHistoryLength.current) return;
 
-    const newEntry = history[history.length - 1];
-    prevHistoryLength.current = history.length;
+  //   // API returns history newest first (created_at desc)
+  //   // Check the new entries (recent additions) to find card draws
+  //   const newEntries = history.slice(0, history.length - prevHistoryLength.current);
+  //   prevHistoryLength.current = history.length;
 
-    if (newEntry == null || typeof newEntry !== "string") return;
+  //   // Search through new entries to find a card draw
+  //   for (const newEntry of newEntries) {
+  //     const comment =
+  //       typeof newEntry === "string"
+  //         ? newEntry
+  //         : (newEntry as { comment?: string } | null)?.comment ?? "";
+  //     const playerName =
+  //       typeof newEntry === "object" && newEntry !== null && "player_name" in newEntry
+  //         ? String((newEntry as { player_name?: string }).player_name ?? "Player")
+  //         : "";
 
-    const cardRegex = /(.+) drew (Chance|Community Chest): (.+)/i;
-    const match = (newEntry as string).match(cardRegex);
+  //     // Match patterns like "drew chance: ..." or "PlayerName drew Chance: ..."
+  //     // The backend format is: "drew chance: [card instruction]" or "drew community chest: [card instruction]"
+  //     // Capture everything after the colon - the card instruction text
+  //     const cardRegex = /drew\s+(chance|community\s+chest):\s*(.+)/i;
+  //     const match = comment.match(cardRegex);
+      
+  //     if (!match || !match[2]) continue; // Not a card entry or no text, check next
 
-    if (!match) return;
+  //     const [, typeStr, text] = match;
+  //     // Remove any trailing "[Rolled X]" or similar patterns, but keep the card text
+  //     const cardText = text.replace(/\s*\[Rolled\s+\d+\].*$/i, "").trim();
+  //     if (!cardText) continue; // Empty card text, skip
+      
+  //     const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
+  //     const displayName = playerName.trim() || "Player";
 
-    const [, playerName, typeStr, text] = match;
-    const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
+  //     const lowerText = cardText.toLowerCase();
+  //     const isGood =
+  //       lowerText.includes("collect") ||
+  //       lowerText.includes("receive") ||
+  //       lowerText.includes("advance") ||
+  //       lowerText.includes("get out of jail") ||
+  //       lowerText.includes("matures") ||
+  //       lowerText.includes("refund") ||
+  //       lowerText.includes("prize") ||
+  //       lowerText.includes("inherit");
 
-    const lowerText = text.toLowerCase();
-    const isGood =
-      lowerText.includes("collect") ||
-      lowerText.includes("receive") ||
-      lowerText.includes("advance") ||
-      lowerText.includes("get out of jail") ||
-      lowerText.includes("matures") ||
-      lowerText.includes("refund") ||
-      lowerText.includes("prize") ||
-      lowerText.includes("inherit");
+  //     const effectMatch = cardText.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
+  //     const effect = effectMatch ? effectMatch[0] : undefined;
 
-    const effectMatch = text.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
-    const effect = effectMatch ? effectMatch[0] : undefined;
+  //     setCardData({ type, text: cardText, effect, isGood });
+  //     setCardPlayerName(displayName);
+  //     setShowCardModal(true);
 
-    setCardData({ type, text, effect, isGood });
-    setCardPlayerName(playerName.trim());
-    setShowCardModal(true);
-
-    const timer = setTimeout(() => setShowCardModal(false), 7000);
-    return () => clearTimeout(timer);
-  }, [game.history]);
+  //     // Extended timer to account for two-stage animation:
+  //     // Stage 1: "drew" message (7 seconds) + Stage 2: card content (8 seconds) = 15 seconds total
+  //     const timer = setTimeout(() => setShowCardModal(false), 15000);
+  //     return () => clearTimeout(timer);
+  //   }
+  // }, [game.history]);
 
   useEffect(() => {
     if (!isAITurn || !buyPrompted || !currentPlayer || !justLandedProperty || buyScore === null) return;
@@ -947,6 +1205,16 @@ const endTurnAfterSpecialMove = useCallback(() => {
     return map;
   }, [players, animatedPositions]);
 
+  /** Roll to show in center: local roll when set, or current player's roll from API (so we see AI/human roll). */
+  const displayRoll = useMemo((): { die1: number; die2: number; total: number } | null => {
+    if (roll) return roll;
+    const otherRolled = currentPlayer?.rolled;
+    if (otherRolled != null && Number(otherRolled) >= 2 && Number(otherRolled) <= 12) {
+      return totalToDice(Number(otherRolled));
+    }
+    return null;
+  }, [roll, currentPlayer?.rolled]);
+
   const propertyOwner = (id: number) => {
     const gp = game_properties.find((gp) => gp.property_id === id);
     return gp ? players.find((p) => p.address === gp.address)?.username || null : null;
@@ -958,10 +1226,59 @@ const endTurnAfterSpecialMove = useCallback(() => {
   const isPropertyMortgaged = (id: number) =>
     game_properties.find((gp) => gp.property_id === id)?.mortgaged === true;
 
+  const handlePayToLeaveJail = useCallback(async () => {
+    if (!me || !game?.id) return;
+    try {
+      await apiClient.post("/game-players/pay-to-leave-jail", {
+        game_id: game.id,
+        user_id: me.user_id,
+      });
+      setJailChoiceRequired(false);
+      toast.success("Paid $50. You may now roll.");
+      await fetchGameState();
+    } catch (err) {
+      toast.error(getContractErrorMessage(err, "Pay jail fine failed"));
+    }
+  }, [me, game?.id, fetchGameState]);
+
+  const handleUseGetOutOfJailFree = useCallback(
+    async (cardType: "chance" | "community_chest") => {
+      if (!me || !game?.id) return;
+      try {
+        await apiClient.post("/game-players/use-get-out-of-jail-free", {
+          game_id: game.id,
+          user_id: me.user_id,
+          card_type: cardType,
+        });
+        setJailChoiceRequired(false);
+        toast.success("Used Get Out of Jail Free. You may now roll.");
+        await fetchGameState();
+      } catch (err) {
+        toast.error(getContractErrorMessage(err, "Use card failed"));
+      }
+    },
+    [me, game?.id, fetchGameState]
+  );
+
+  const handleStayInJail = useCallback(async () => {
+    if (!me || !game?.id) return;
+    try {
+      await apiClient.post("/game-players/stay-in-jail", { user_id: me.user_id, game_id: game.id });
+      setJailChoiceRequired(false);
+      await fetchGameState();
+      END_TURN();
+    } catch (err) {
+      toast.error(getContractErrorMessage(err, "Stay in jail failed"));
+    }
+  }, [me, game?.id, fetchGameState, END_TURN]);
+
+  const hasChanceJailCard = (me?.chance_jail_card ?? 0) >= 1;
+  const hasCommunityChestJailCard = (me?.community_chest_jail_card ?? 0) >= 1;
+
   const handleRollDice = () => ROLL_DICE(false);
   const handleBuyProperty = () => BUY_PROPERTY(false);
   const handleSkipBuy = () => {
-    showToast("Skipped purchase");
+    setTurnEndScheduled(true);
     setBuyPrompted(false);
     landedPositionThisTurn.current = null;
     setTimeout(END_TURN, 900);
@@ -982,7 +1299,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
       showToast("Game over! You have declared bankruptcy.", "error");
       setShowBankruptcyModal(true);
     } catch (err) {
-      showToast("Failed to end game", "error");
+      toast.error(getContractErrorMessage(err, "Failed to end game"));
     }
   };
 
@@ -1008,6 +1325,13 @@ const endTurnAfterSpecialMove = useCallback(() => {
 
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-cyan-900 text-white p-4 flex flex-col lg:flex-row gap-4 items-start justify-center relative">
+      {/* Trade notification bell - takes user to incoming trades in sidebar */}
+      <div className="fixed top-4 right-6 z-40">
+        <TradeAlertPill
+          incomingCount={myIncomingTrades.length}
+          onViewTrades={onViewTrades}
+        />
+      </div>
       <div className="flex justify-center items-start w-full lg:w-2/3 max-w-[800px] mt-[-1rem]">
         <div className="w-full bg-[#010F10] aspect-square rounded-lg relative shadow-2xl shadow-cyan-500/10">
           <div className="grid grid-cols-11 grid-rows-11 w-full h-full gap-[2px] box-border">
@@ -1017,7 +1341,7 @@ const endTurnAfterSpecialMove = useCallback(() => {
               currentPlayer={currentPlayer}
               playerCanRoll={playerCanRoll}
               isRolling={isRolling}
-              roll={roll}
+              roll={displayRoll}
               buyPrompted={buyPrompted}
               currentProperty={justLandedProperty || currentProperty}
               currentPlayerBalance={currentPlayer?.balance ?? 0}
@@ -1028,6 +1352,24 @@ const endTurnAfterSpecialMove = useCallback(() => {
               onSkipBuy={handleSkipBuy}
               onDeclareBankruptcy={handleDeclareBankruptcy}
               isPending={false}
+              timerSlot={game?.duration && Number(game.duration) > 0 ? (
+                <GameDurationCountdown game={game} onTimeUp={handleGameTimeUp} />
+              ) : null}
+              gameTimeUp={gameTimeUp}
+              inJail={meInJail}
+              jailChoiceRequired={jailChoiceRequired}
+              canPayToLeaveJail={canPayToLeaveJail}
+              hasChanceJailCard={hasChanceJailCard}
+              hasCommunityChestJailCard={hasCommunityChestJailCard}
+              onPayToLeaveJail={handlePayToLeaveJail}
+              onUseGetOutOfJailFree={handleUseGetOutOfJailFree}
+              onStayInJail={handleStayInJail}
+              turnEndScheduled={turnEndScheduled}
+              isUntimed={isUntimed}
+              endByNetWorthStatus={endByNetWorthStatus}
+              endByNetWorthLoading={endByNetWorthLoading}
+              onVoteEndByNetWorth={voteEndByNetWorth}
+              me={me}
             />
 
             {properties.map((square) => {
@@ -1110,12 +1452,12 @@ const endTurnAfterSpecialMove = useCallback(() => {
               )}
             </AnimatePresence>
 
-      <CardModal
+      {/* <CardModal
         isOpen={showCardModal}
         onClose={() => setShowCardModal(false)}
         card={cardData}
         playerName={cardPlayerName}
-      />
+      /> */}
 
       <BankruptcyModal
         isOpen={showBankruptcyModal}
@@ -1131,6 +1473,179 @@ const endTurnAfterSpecialMove = useCallback(() => {
         onMortgage={handleMortgage}
         onUnmortgage={handleUnmortgage}
       />
+
+      {/* Time's up: Winner / Loser modal — matches mobile AI game-modals */}
+      <AnimatePresence>
+        {winner && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/90 backdrop-blur-xl flex items-center justify-center z-[100] p-4 overflow-y-auto"
+          >
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-950/90 via-violet-950/60 to-cyan-950/70" />
+            {winner.user_id === me?.user_id ? (
+              <motion.div
+                initial={{ scale: 0.88, y: 24, opacity: 0 }}
+                animate={{ scale: 1, y: 0, opacity: 1 }}
+                exit={{ scale: 0.92, opacity: 0 }}
+                transition={{ type: "spring", stiffness: 320, damping: 24 }}
+                className="relative w-full max-w-md rounded-[2rem] overflow-hidden border-2 border-cyan-400/50 bg-gradient-to-b from-indigo-900/95 via-violet-900/90 to-slate-950/95 shadow-2xl shadow-cyan-900/30 text-center"
+              >
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(34,211,238,0.18),transparent)]" />
+                <div className="relative z-10 p-8 sm:p-10">
+                  <motion.div
+                    initial={{ scale: 0, rotate: -20 }}
+                    animate={{ scale: 1, rotate: 0 }}
+                    transition={{ type: "spring", stiffness: 200, delay: 0.1 }}
+                    className="mb-6 relative"
+                  >
+                    <Crown className="w-20 h-20 sm:w-24 sm:h-24 mx-auto text-cyan-300 drop-shadow-[0_0_40px_rgba(34,211,238,0.7)]" />
+                    <motion.div
+                      className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-2"
+                      animate={{ opacity: [0.4, 0.8, 0.4] }}
+                      transition={{ duration: 2, repeat: Infinity }}
+                    >
+                      <Sparkles className="w-6 h-6 text-cyan-400/80" />
+                    </motion.div>
+                  </motion.div>
+                  <motion.h1
+                    initial={{ y: 12, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="text-4xl sm:text-5xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-200 to-cyan-300 mb-2"
+                  >
+                    YOU WIN
+                  </motion.h1>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.35 }}
+                    className="text-lg text-slate-200 mb-2"
+                  >
+                    You had the highest net worth when time ran out.
+                  </motion.p>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.4 }}
+                    className="text-cyan-200/90 text-base mb-6"
+                  >
+                    Well played — you earned this one.
+                  </motion.p>
+                  <motion.button
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.5 }}
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleClaimAndGoHome}
+                    disabled={claimAndLeaveInProgress || endGamePending}
+                    className="w-full py-4 px-6 rounded-2xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 text-slate-900 font-bold text-lg shadow-lg shadow-cyan-900/40 border border-cyan-300/40 transition-all disabled:cursor-wait"
+                  >
+                    {claimAndLeaveInProgress || endGamePending ? "Claiming…" : "Claim & go home"}
+                  </motion.button>
+                  <p className="text-sm text-slate-500 mt-6">Thanks for playing Tycoon!</p>
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div
+                initial={{ scale: 0.88, y: 24, opacity: 0 }}
+                animate={{ scale: 1, y: 0, opacity: 1 }}
+                exit={{ scale: 0.92, opacity: 0 }}
+                transition={{ type: "spring", stiffness: 320, damping: 24 }}
+                className="relative w-full max-w-md rounded-[2rem] overflow-hidden border-2 border-slate-500/50 bg-gradient-to-b from-slate-900/95 via-slate-800/90 to-black/95 shadow-2xl shadow-slate-900/50 text-center"
+              >
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(34,211,238,0.12),transparent)]" />
+                <div className="relative z-10 p-8 sm:p-10">
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ delay: 0.15 }}
+                    className="mb-5"
+                  >
+                    <Trophy className="w-16 h-16 sm:w-20 sm:h-20 mx-auto text-amber-400/90" />
+                  </motion.div>
+                  <motion.h1
+                    initial={{ y: 8, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.25 }}
+                    className="text-2xl sm:text-3xl font-bold text-slate-200 mb-1"
+                  >
+                    Time&apos;s up
+                  </motion.h1>
+                  <motion.p
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: 0.35 }}
+                    className="text-xl font-semibold text-white mb-4"
+                  >
+                    {winner.username} <span className="text-amber-400">wins</span>
+                  </motion.p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="mb-6 flex flex-col items-center gap-3"
+                  >
+                    <HeartHandshake className="w-12 h-12 text-cyan-400/80" />
+                    <p className="text-slate-300">You still get a consolation prize.</p>
+                  </motion.div>
+                  <motion.button
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.5 }}
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleClaimAndGoHome}
+                    disabled={claimAndLeaveInProgress || endGamePending}
+                    className="w-full py-4 px-6 rounded-2xl bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-600 text-white font-bold text-lg shadow-lg shadow-cyan-900/40 border border-cyan-400/30 transition-all disabled:cursor-wait"
+                  >
+                    {claimAndLeaveInProgress || endGamePending ? "Claiming…" : "Claim & go home"}
+                  </motion.button>
+                  <p className="text-sm text-slate-500 mt-6">Thanks for playing Tycoon!</p>
+                </div>
+              </motion.div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {showExitPrompt && winner && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-[60] p-4"
+        >
+          <motion.div
+            initial={{ scale: 0.8 }}
+            animate={{ scale: 1 }}
+            className="bg-gradient-to-br from-gray-900 to-gray-800 p-8 rounded-3xl max-w-md w-full text-center border border-cyan-500/30 shadow-2xl"
+          >
+            <h2 className="text-2xl font-bold text-white mb-5">One last step</h2>
+            <p className="text-lg text-gray-300 mb-6">
+              {winner.user_id === me?.user_id
+                ? "End the game on the blockchain to claim your rewards."
+                : "End the game on the blockchain to collect your consolation prize."}
+            </p>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+              <button
+                onClick={handleFinalizeTimeUpAndLeave}
+                disabled={endGamePending}
+                className="px-8 py-4 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded-xl transition disabled:opacity-50"
+              >
+                {endGamePending ? "Processing..." : "Yes, end game"}
+              </button>
+              <button
+                onClick={() => setShowExitPrompt(false)}
+                className="px-8 py-4 bg-gray-700 hover:bg-gray-600 text-white font-bold rounded-xl transition"
+              >
+                Back
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
 
       <Toaster
         position="top-center"

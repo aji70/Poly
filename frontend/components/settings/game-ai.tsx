@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import { FaUser, FaRobot, FaBrain, FaCoins } from "react-icons/fa6";
 import { House } from "lucide-react";
 import {
@@ -16,189 +16,26 @@ import { GiPrisoner, GiBank } from "react-icons/gi";
 import { IoBuild } from "react-icons/io5";
 import { FaRandom } from "react-icons/fa";
 import { useRouter } from "next/navigation";
-import { useAccount } from "wagmi";
-import { useAppKitNetwork } from "@reown/appkit/react";
-import { toast } from "react-toastify";
-import { generateGameCode } from "@/lib/utils/games";
 import { GamePieces } from "@/lib/constants/games";
-import { apiClient } from "@/lib/api";
-import {
-  useIsRegistered,
-  useGetUsername,
-  useCreateAIGame,
-} from "@/context/ContractProvider";
-import { TYCOON_CONTRACT_ADDRESSES } from "@/constants/contracts";
-import { Address } from "viem";
-
-interface GameCreateResponse {
-  data?: {
-    data?: { id: string | number };
-    id?: string | number;
-  };
-  id?: string | number;
-}
-
-const ai_address = [
-  "0xA1FF1c93600c3487FABBdAF21B1A360630f8bac6",
-  "0xB2EE17D003e63985f3648f6c1d213BE86B474B11",
-  "0xC3FF882E779aCbc112165fa1E7fFC093e9353B21",
-  "0xD4FFDE5296C3EE6992bAf871418CC3BE84C99C32",
-  "0xE5FF75Fcf243C4cE05B9F3dc5Aeb9F901AA361D1",
-  "0xF6FF469692a259eD5920C15A78640571ee845E8",
-  "0xA7FFE1f969Fa6029Ff2246e79B6A623A665cE69",
-  "0xB8FF2cEaCBb67DbB5bc14D570E7BbF339cE240F6",
-];
+import { ShieldCheck } from "lucide-react";
+import { useAIGameCreate } from "@/hooks/useAIGameCreate";
 
 export default function PlayWithAI() {
   const router = useRouter();
-  const { address } = useAccount();
-  const { caipNetwork } = useAppKitNetwork();
+  const {
+    settings,
+    setSettings,
+    handlePlay,
+    canCreate,
+    isCreatePending,
+    isGuest,
+    isRegisteredLoading,
+    registeredAgents,
+    agentsLoading,
+    registrySupported,
+  } = useAIGameCreate();
 
-  const { data: username } = useGetUsername(address);
-  const { data: isUserRegistered, isLoading: isRegisteredLoading } = useIsRegistered(address);
-
-  const isMiniPay = false
-  const chainName = caipNetwork?.name?.toLowerCase().replace(" ", "") || `chain-${caipNetwork?.id ?? "unknown"}`;
-
-  const [settings, setSettings] = useState({
-    symbol: "hat",
-    aiCount: 1,
-    startingCash: 5000,
-    aiDifficulty: "boss" as "easy" | "medium" | "hard" | "boss",
-    auction: true,
-    rentInPrison: false,
-    mortgage: true,
-    evenBuild: true,
-    randomPlayOrder: true,
-    duration: 0, // minutes
-  });
-
-  const contractAddress = TYCOON_CONTRACT_ADDRESSES[caipNetwork?.id as keyof typeof TYCOON_CONTRACT_ADDRESSES] as Address | undefined;
-
-  const gameCode = generateGameCode();
-  const totalPlayers = settings.aiCount + 1;
-
-  const { write: createAiGame, isPending: isCreatePending } = useCreateAIGame(
-    username || "",
-    "PRIVATE",
-    settings.symbol,
-    settings.aiCount,           // ← number of AI opponents
-    gameCode,
-    BigInt(settings.startingCash)
-  );
-
-  const handlePlay = async () => {
-    if (!address || !username || !isUserRegistered) {
-      toast.error("Please connect your wallet and register first!", { autoClose: 5000 });
-      return;
-    }
-
-    if (!contractAddress) {
-      toast.error("Game contract not deployed on this network.");
-      return;
-    }
-
-    const toastId = toast.loading(`Summoning ${settings.aiCount} AI opponent${settings.aiCount > 1 ? "s" : ""}...`);
-
-    try {
-      toast.update(toastId, { render: "Creating AI game on-chain..." });
-      const onChainGameId = await createAiGame();
-      if (!onChainGameId) throw new Error("Failed to create game on-chain");
-
-      toast.update(toastId, { render: "Saving game to server..." });
-
-      let dbGameId: string | number | undefined;
-      try {
-           const saveRes: GameCreateResponse = await apiClient.post("/games", {
-                id: onChainGameId,
-                code: gameCode,
-                mode: "PRIVATE",
-                address,
-                symbol: settings.symbol,
-                number_of_players: totalPlayers,
-                ai_opponents: settings.aiCount,
-                ai_difficulty: settings.aiDifficulty,
-                 is_ai: true,
-                  is_minipay: isMiniPay,
-                  chain: chainName,
-                  duration: settings.duration,
-                settings: {
-                  auction: settings.auction,
-                  rent_in_prison: settings.rentInPrison,
-                  mortgage: settings.mortgage,
-                  even_build: settings.evenBuild,
-                  starting_cash: settings.startingCash,
-                  randomize_play_order: settings.randomPlayOrder,
-                  },
-                });
-        
-
-        dbGameId =
-          typeof saveRes === "string" || typeof saveRes === "number"
-            ? saveRes
-            : saveRes?.data?.data?.id ?? saveRes?.data?.id ?? saveRes?.id;
-
-        if (!dbGameId) throw new Error("Backend did not return game ID");
-      } catch (backendError: any) {
-        console.error("Backend save error:", backendError);
-        throw new Error(backendError.response?.data?.message || "Failed to save game on server");
-      }
-
-      toast.update(toastId, { render: "Adding AI opponents..." });
-
-      let availablePieces = GamePieces.filter((p) => p.id !== settings.symbol);
-      for (let i = 0; i < settings.aiCount; i++) {
-        if (availablePieces.length === 0) availablePieces = [...GamePieces];
-        const randomIndex = Math.floor(Math.random() * availablePieces.length);
-        const aiSymbol = availablePieces[randomIndex].id;
-        availablePieces.splice(randomIndex, 1);
-
-        const aiAddress = ai_address[i];
-
-        try {
-          await apiClient.post("/game-players/join", {
-            address: aiAddress,
-            symbol: aiSymbol,
-            code: gameCode,
-          });
-        } catch (joinErr) {
-          console.warn(`AI player ${i + 1} failed to join:`, joinErr);
-        }
-      }
-
-      try {
-        await apiClient.put(`/games/${dbGameId}`, { status: "RUNNING" });
-      } catch (statusErr) {
-        console.warn("Failed to set game status to RUNNING:", statusErr);
-      }
-
-      toast.update(toastId, {
-        render: "Battle begins! Good luck, Tycoon!",
-        type: "success",
-        isLoading: false,
-        autoClose: 5000,
-      });
-
-      router.push(`/ai-play?gameCode=${gameCode}`);
-    } catch (err: any) {
-      console.error("handlePlay error:", err);
-
-      let message = "Something went wrong. Please try again.";
-
-      if (err.message?.includes("user rejected")) {
-        message = "Transaction rejected by user.";
-      }
-
-      toast.update(toastId, {
-        render: message,
-        type: "error",
-        isLoading: false,
-        autoClose: 8000,
-      });
-    }
-  };
-
-  if (isRegisteredLoading) {
+  if (!isGuest && isRegisteredLoading) {
     return (
       <div className="w-full h-screen flex items-center justify-center bg-settings bg-cover">
         <p className="text-[#00F0FF] text-4xl font-orbitron animate-pulse tracking-wider">
@@ -226,11 +63,10 @@ export default function PlayWithAI() {
           <div className="w-24" />
         </div>
 
-        {/* Main Grid - Adjusted layout after stake removal */}
+        {/* Main Grid - Desktop layout */}
         <div className="grid lg:grid-cols-3 gap-8 mb-10">
           {/* Column 1 */}
           <div className="space-y-6">
-            {/* Your Piece */}
             <div className="bg-gradient-to-br from-cyan-900/40 to-blue-900/40 rounded-2xl p-6 border border-cyan-500/30">
               <div className="flex items-center gap-3 mb-4">
                 <FaUser className="w-7 h-7 text-cyan-400" />
@@ -242,15 +78,12 @@ export default function PlayWithAI() {
                 </SelectTrigger>
                 <SelectContent>
                   {GamePieces.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
-            {/* AI Opponents */}
             <div className="bg-gradient-to-br from-purple-900/40 to-pink-900/40 rounded-2xl p-6 border border-purple-500/30">
               <div className="flex items-center gap-3 mb-4">
                 <FaRobot className="w-7 h-7 text-purple-400" />
@@ -265,15 +98,18 @@ export default function PlayWithAI() {
                 </SelectTrigger>
                 <SelectContent>
                   {[1, 2, 3, 4, 5, 6].map((n) => (
-                    <SelectItem key={n} value={n.toString()}>
-                      {n} AI
-                    </SelectItem>
+                    <SelectItem key={n} value={n.toString()}>{n} AI</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {registrySupported && registeredAgents.length > 0 && (
+                <p className="mt-2 text-xs text-purple-300/80 flex items-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  {registeredAgents.length} verified on-chain
+                </p>
+              )}
             </div>
 
-            {/* Difficulty */}
             <div className="bg-gradient-to-br from-red-900/40 to-orange-900/40 rounded-2xl p-6 border border-red-500/30">
               <div className="flex items-center gap-3 mb-4">
                 <FaBrain className="w-7 h-7 text-red-400" />
@@ -290,15 +126,13 @@ export default function PlayWithAI() {
                   <SelectItem value="easy">Easy</SelectItem>
                   <SelectItem value="medium">Medium</SelectItem>
                   <SelectItem value="hard">Hard</SelectItem>
-                  <SelectItem value="boss" className="text-pink-400 font-bold">
-                    BOSS MODE
-                  </SelectItem>
+                  <SelectItem value="boss" className="text-pink-400 font-bold">BOSS MODE</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
 
-          {/* Column 2 - Starting Cash (moved here to fill space) */}
+          {/* Column 2 */}
           <div className="bg-gradient-to-br from-amber-900/40 to-orange-900/40 rounded-2xl p-6 border border-amber-500/30">
             <div className="flex items-center gap-3 mb-4">
               <FaCoins className="w-7 h-7 text-amber-400" />
@@ -319,8 +153,6 @@ export default function PlayWithAI() {
                 <SelectItem value="5000">$5,000</SelectItem>
               </SelectContent>
             </Select>
-
-            {/* Game Duration - placed here as secondary option */}
             <div className="mt-8">
               <div className="flex items-center gap-3 mb-4">
                 <FaBrain className="w-7 h-7 text-indigo-400" />
@@ -334,6 +166,8 @@ export default function PlayWithAI() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="2">2 minutes</SelectItem>
+                  <SelectItem value="5">5 minutes</SelectItem>
                   <SelectItem value="30">30 minutes</SelectItem>
                   <SelectItem value="45">45 minutes</SelectItem>
                   <SelectItem value="60">60 minutes</SelectItem>
@@ -344,8 +178,24 @@ export default function PlayWithAI() {
             </div>
           </div>
 
-          {/* Column 3 - House Rules */}
+          {/* Column 3 */}
           <div className="space-y-6">
+            {registrySupported && registeredAgents.length > 0 && !agentsLoading && (
+              <div className="bg-gradient-to-br from-emerald-900/40 to-teal-900/40 rounded-2xl p-6 border border-emerald-500/30">
+                <div className="flex items-center gap-3 mb-3">
+                  <ShieldCheck className="w-6 h-6 text-emerald-400" />
+                  <h3 className="text-lg font-bold text-emerald-300">Registered AI Agents</h3>
+                </div>
+                <ul className="space-y-2 max-h-32 overflow-y-auto">
+                  {registeredAgents.map((a) => (
+                    <li key={a.tokenId} className="text-sm text-gray-300 flex justify-between items-center gap-2">
+                      <span className="font-medium text-white truncate">{a.name}</span>
+                      <span className="text-emerald-400/90 shrink-0">{a.playStyle}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="bg-black/60 rounded-2xl p-6 border border-cyan-500/30 h-full">
               <h3 className="text-xl font-bold text-cyan-400 mb-5 text-center">House Rules</h3>
               <div className="space-y-4">
@@ -372,19 +222,17 @@ export default function PlayWithAI() {
           </div>
         </div>
 
-        {/* Start Button */}
         <div className="flex justify-center mt-12">
           <button
             onClick={handlePlay}
-            disabled={isCreatePending}
+            disabled={!canCreate || (!isGuest && isCreatePending)}
             className="relative px-24 py-6 text-3xl font-orbitron font-black tracking-widest
-                     bg-gradient-to-r from-cyan-500 via-purple-600 to-pink-600
-                     hover:from-pink-600 hover:via-purple-600 hover:to-cyan-500
+                     bg-[#00F0FF] hover:bg-[#0FF0FC] text-[#010F10]
                      rounded-2xl shadow-2xl transform hover:scale-105 active:scale-100
                      transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed
-                     border-4 border-white/20"
+                     border-4 border-[#00F0FF]/40"
           >
-            <span className="relative z-10 text-white drop-shadow-2xl">
+            <span className="relative z-10 drop-shadow-lg">
               {isCreatePending ? "SUMMONING..." : "START BATTLE"}
             </span>
           </button>

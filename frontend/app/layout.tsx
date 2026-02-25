@@ -7,6 +7,7 @@ import { headers } from "next/headers";
 import ContextProvider from "@/context";
 import AppKitProviderWrapper from "@/components/AppKitProviderWrapper";
 import { TycoonProvider } from "@/context/ContractProvider";
+import { GuestAuthProvider } from "@/context/GuestAuthContext";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { SocketProvider } from "@/context/SocketContext";
@@ -25,7 +26,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "Tycoon",
     description:
-      "Tycoon is a decentralized on-chain game inspired by the classic Monopoly game, built on Polygon. It allows players to buy, sell, and trade digital properties in a trustless gaming environment.",
+      "Tycoon is a decentralized on-chain game inspired by the classic Monopoly game, built on Celo. It allows players to buy, sell, and trade digital properties in a trustless gaming environment.",
     other: {
       "base:app_id": "695d328c3ee38216e9af4359", 
       "fc:frame": JSON.stringify({
@@ -61,6 +62,7 @@ export default async function RootLayout({
         <FarcasterReady />
         <ContextProvider cookies={cookies}>
           <TycoonProvider>
+            <GuestAuthProvider>
             <AppKitProviderWrapper>
               {/* SocketProvider commented out as in your code */}
               {/* <SocketProvider serverUrl="https://base-monopoly-production.up.railway.app/api"> */}
@@ -95,6 +97,7 @@ export default async function RootLayout({
               
               {/* </SocketProvider> */}
             </AppKitProviderWrapper>
+            </GuestAuthProvider>
           </TycoonProvider>
         </ContextProvider>
       </body>

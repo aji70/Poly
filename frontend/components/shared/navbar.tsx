@@ -5,7 +5,7 @@ import { motion, useScroll, useSpring } from 'framer-motion';
 import Logo from './logo';
 import LogoIcon from '@/public/logo.png';
 import Link from 'next/link';
-import { House, Volume2, VolumeOff, User, ShoppingBag, Globe } from 'lucide-react';
+import { House, Volume2, VolumeOff, User, ShoppingBag, Trophy, Globe } from 'lucide-react';
 import useSound from 'use-sound';
 import { useAppKitAccount, useAppKitNetwork } from '@reown/appkit/react';
 import { PiUserCircle } from 'react-icons/pi';
@@ -14,6 +14,7 @@ import avatar from '@/public/avatar.jpg';
 import WalletConnectModal from './wallet-connect-modal';
 import WalletDisconnectModal from './wallet-disconnect-modal';
 import NetworkSwitcherModal from './network-switcher-modal';
+import { useProfileAvatar } from '@/context/ProfileContext';
 
 const NavBar = () => {
   const { scrollYProgress } = useScroll();
@@ -38,6 +39,7 @@ const NavBar = () => {
   const [isNetworkModalOpen, setIsNetworkModalOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [isDisconnectModalOpen, setIsDisconnectModalOpen] = useState(false);
+  const profileAvatar = useProfileAvatar();
 
   const toggleSound = () => {
     if (isSoundPlaying) {
@@ -95,6 +97,17 @@ const NavBar = () => {
             </Link>
           )}
 
+          {/* Leaderboard button (only when connected) */}
+          {isConnected && (
+            <Link
+              href="/leaderboard"
+              className="w-[100px] h-[40px] border border-[#0E282A] hover:border-[#003B3E] rounded-[12px] hidden md:flex justify-center items-center gap-2 bg-[#011112] text-[#00F0FF]"
+            >
+              <Trophy className="w-[16px] h-[16px]" />
+              <span className="text-[12px] font-[400] font-dmSans">Leaderboard</span>
+            </Link>
+          )}
+
           {/* Home button */}
           <Link
             href="/"
@@ -139,14 +152,18 @@ const NavBar = () => {
 
               {/* Wallet Address + Avatar */}
               <div className="flex items-center gap-3 px-5 py-3 rounded-[12px] border border-[#0E282A] bg-[#011112] text-[#00F0FF] font-orbitron">
-                <div className="h-8 w-8 rounded-full border-2 border-[#0FF0FC] overflow-hidden shadow-lg">
-                  <Image
-                    src={avatar}
-                    alt="Wallet"
-                    width={200}
-                    height={200}
-                    className="object-cover w-full h-full"
-                  />
+                <div className="h-8 w-8 rounded-full border-2 border-[#0FF0FC] overflow-hidden shadow-lg shrink-0">
+                  {profileAvatar ? (
+                    <img src={profileAvatar} alt="Profile" className="w-full h-full object-cover" />
+                  ) : (
+                    <Image
+                      src={avatar}
+                      alt="Wallet"
+                      width={32}
+                      height={32}
+                      className="object-cover w-full h-full"
+                    />
+                  )}
                 </div>
                 <span className="text-sm tracking-wider">
                   {address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'Connected'}

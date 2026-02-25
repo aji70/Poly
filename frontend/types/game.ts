@@ -47,6 +47,11 @@ export interface Game {
   duration: number | string | null;
   created_at: string;
   updated_at: string;
+  /** Set when status becomes RUNNING (e.g. all players joined). Game timing starts from this. */
+  started_at?: string | null;
+  is_ai?: boolean;
+  /** When game ends by time: { user_id: position } where 1 = winner. */
+  placements?: Record<number, number>;
   settings: GameSettings;
   players: Player[];
   history: History[];
@@ -61,6 +66,7 @@ export interface GameSettings {
 }
 
 export interface Player {
+  id?: number; // game_player id (for chat)
   user_id: number;
   address: string;
   chance_jail_card: number;
@@ -72,9 +78,17 @@ export interface Player {
   joined_date: string;
   username: string;
   rolls: number;
+  /** Dice total for current turn (2–12); set after player rolls, reset on end turn */
+  rolled?: number | null;
   circle: number;
   in_jail: boolean;
   in_jail_rolls: number;
+  /** Unix timestamp (seconds) when current turn started; used for 90s roll timer */
+  turn_start?: string | null;
+  /** Consecutive 90s turn timeouts; after 3, opponents can remove this player (multiplayer) */
+  consecutive_timeouts?: number;
+  /** Number of turns this player has completed (for anti-spam: valid wins require >= 20 turns) */
+  turn_count?: number;
 }
 
 export interface GamePlayExtra {

@@ -8,6 +8,7 @@ if (!projectId) {
   throw new Error('Project ID is not defined')
 }
 
+// Polygon only
 export const networks = [polygon]
 
 //Set up the Wagmi Adapter (Config)

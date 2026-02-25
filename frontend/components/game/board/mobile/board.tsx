@@ -13,7 +13,9 @@ interface BoardProps {
   currentGameProperties: GameProperty[];
   animatedPositions: Record<number, number>;
   currentPlayerId: number | null | undefined;
-  onPropertyClick?: (propertyId: number) => void; // ← NEW: Click handler
+  onPropertyClick?: (propertyId: number) => void;
+  /** Renders in the center of the board (e.g. timers + roll dice) */
+  centerContent?: React.ReactNode;
 }
 
 const isTopRow = (square: Property) => square.grid_row === 1;
@@ -28,6 +30,7 @@ const Board: React.FC<BoardProps> = ({
   animatedPositions,
   currentPlayerId,
   onPropertyClick,
+  centerContent,
 }) => {
   const boardRef = useRef<HTMLDivElement>(null);
 
@@ -66,16 +69,17 @@ const Board: React.FC<BoardProps> = ({
   }, [currentPlayerId, players]);
 
   return (
-    <div ref={boardRef} className="w-full max-w-[95vw] max-h-[60vh] overflow-auto touch-pinch-zoom touch-pan-x touch-pan-y aspect-square relative shadow-2xl shadow-cyan-500/10 mt-4">
-      <div className="grid grid-cols-11 grid-rows-11 w-full h-full gap-[1px] box-border scale-90 sm:scale-100">
-        {/* Center Area */}
-        <div className="col-start-2 col-span-9 row-start-2 row-span-9 bg-[#010F10] flex flex-col justify-center items-center p-2 relative overflow-hidden rounded-lg"
+    <div ref={boardRef} className="w-full max-w-[95vw] max-h-[60vh] overflow-auto touch-pinch-zoom touch-pan-x touch-pan-y aspect-square relative shadow-2xl shadow-cyan-500/10">
+      <div className="grid grid-cols-11 grid-rows-11 w-full h-full min-w-0 gap-[1px] box-border scale-90 sm:scale-100">
+        {/* Center Area - z-20 so timers + roll dice show above surrounding squares */}
+        <div className="col-start-2 col-span-9 row-start-2 row-span-9 bg-[#010F10] flex flex-col justify-center items-center p-3 relative overflow-hidden rounded-lg z-20"
          style={{
     backgroundImage: `url(/bb.jpg)`,
-    backgroundSize: 'cover',    // ← usually good to add
+    backgroundSize: 'cover',
     backgroundPosition: 'center',
      }}
         >
+          {centerContent}
         </div>
 
         {/* All Squares */}

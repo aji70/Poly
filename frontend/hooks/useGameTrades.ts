@@ -1,6 +1,5 @@
 // hooks/useGameTrades.ts
 import { useState, useEffect, useRef, useCallback } from "react";
-import toast from "react-hot-toast";
 import { apiClient } from "@/lib/api";
 import { ApiResponse } from "@/types/api";
 import { Player } from "@/types/game";
@@ -52,7 +51,6 @@ export function useGameTrades({ gameId, myUserId, players }: UseGameTradesProps)
       }
     } catch (err) {
       console.error("Error loading trades:", err);
-      toast.error("Failed to load trades");
     } finally {
       setIsLoading(false);
     }

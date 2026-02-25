@@ -113,9 +113,6 @@ const PlayerList: React.FC<PlayerListProps> = ({
                       YOU
                     </span>
                   )}
-                  {p.in_jail && (
-                    <span className="text-red-400 text-xs font-bold">[JAIL]</span>
-                  )}
                   {isAI && <span className="text-gray-500 text-xs">🤖</span>}
                 </div>
 
@@ -135,9 +132,11 @@ const PlayerList: React.FC<PlayerListProps> = ({
               </div>
             </div>
 
-            <div className={`font-black drop-shadow-md ${compact ? "text-sm" : "text-lg"} ${balanceColor}`}>
-              ${p.balance.toLocaleString()}
-            </div>
+            {p.balance > 0 && (
+              <div className={`font-black drop-shadow-md ${compact ? "text-sm" : "text-lg"} ${balanceColor}`}>
+                ${p.balance.toLocaleString()}
+              </div>
+            )}
 
             {/* Trade button - only in non-compact mode or on selection */}
             <AnimatePresence>

@@ -7,10 +7,14 @@ import { useAccount } from "wagmi";
 import { apiClient } from "@/lib/api";
 import { ApiResponse } from "@/types/api";
 import { Game } from "@/lib/types/games";
+import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 
 export default function JoinRoom(): JSX.Element {
   const router = useRouter();
   const { address, isConnected } = useAccount();
+  const guestAuth = useGuestAuthOptional();
+  const guestUser = guestAuth?.guestUser ?? null;
+  const canAct = isConnected || !!guestUser;
 
   const [code, setCode] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -20,9 +24,9 @@ export default function JoinRoom(): JSX.Element {
   const [pendingGames, setPendingGames] = useState<Game[]>([]);
   const [fetchingRecent, setFetchingRecent] = useState<boolean>(true);
   const [fetchingPending, setFetchingPending] = useState<boolean>(true);
-  const [timeFilter, setTimeFilter] = useState<number>(60 * 60 * 1000); // Default: last hour in ms
+  const [timeFilter, setTimeFilter] = useState<number>(5 * 60 * 1000); // Default: last 5 minutes in ms
 
-  // Time filter options
+  // Time filter options - prioritize recent games
   const timeOptions = [
     { label: "Last 5 minutes", value: 5 * 60 * 1000 },
     { label: "Last 10 minutes", value: 10 * 60 * 1000 },
@@ -34,9 +38,14 @@ export default function JoinRoom(): JSX.Element {
   // Uppercase and trim code input
   const normalizedCode = useMemo(() => code.trim().toUpperCase(), [code]);
 
-  // Fetch recent games where user is a player (for "Continue Game" section)
   useEffect(() => {
-    if (!isConnected || !address) {
+    if (!canAct) {
+      setFetchingRecent(false);
+      setFetchingPending(false);
+      return;
+    }
+    const addr = address ?? guestUser?.address;
+    if (!addr) {
       setFetchingRecent(false);
       setFetchingPending(false);
       return;
@@ -44,7 +53,9 @@ export default function JoinRoom(): JSX.Element {
 
     const fetchRecent = async () => {
       try {
-        const res = await apiClient.get<ApiResponse>("/games/my-games");
+        const res = await apiClient.get<ApiResponse>("/games/my-games", {
+          params: { address: addr },
+        });
         if (res?.data?.success && Array.isArray(res.data.data)) {
           setRecentGames(res.data.data as Game[]);
         }
@@ -70,7 +81,16 @@ export default function JoinRoom(): JSX.Element {
 
     fetchRecent();
     fetchPending();
-  }, [address, isConnected]);
+  }, [address, canAct, guestUser?.address]);
+
+  // Only show games that are not finished (so "Continue Game" is never for ended games)
+  const activeRecentGames = useMemo(
+    () =>
+      recentGames.filter(
+        (g) => g.status !== "COMPLETED" && g.status !== "CANCELLED"
+      ),
+    [recentGames]
+  );
 
   // Filter and sort pending games based on timeFilter
   useEffect(() => {
@@ -101,11 +121,6 @@ export default function JoinRoom(): JSX.Element {
       return;
     }
 
-    if (!isConnected) {
-      setError("Please connect your wallet to join a game.");
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
@@ -122,8 +137,9 @@ export default function JoinRoom(): JSX.Element {
 
       if (game.status === "RUNNING") {
         // Game already started — go directly to play if player is in it
-        const isPlayerInGame = game.players.some(
-          (p) => p.address.toLowerCase() === address?.toLowerCase()
+        const addr = address ?? guestUser?.address;
+        const isPlayerInGame = addr && game.players.some(
+          (p) => String(p.address || "").toLowerCase() === addr.toLowerCase()
         );
 
         if (isPlayerInGame) {
@@ -132,7 +148,7 @@ export default function JoinRoom(): JSX.Element {
           throw new Error("This game has already started and you are not a player.");
         }
       } else if (game.status === "PENDING") {
-        // Game waiting — go to waiting room
+        // Game waiting — go to waiting room (sign in as guest or connect wallet there to join)
         router.push(`/game-waiting?gameCode=${encodeURIComponent(normalizedCode)}`);
       } else {
         throw new Error("This game is no longer active.");
@@ -142,7 +158,7 @@ export default function JoinRoom(): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [normalizedCode, address, isConnected, router]);
+  }, [normalizedCode, address, guestUser?.address, router]);
 
   const handleContinueGame = useCallback(
     (game: Game) => {
@@ -157,15 +173,11 @@ export default function JoinRoom(): JSX.Element {
 
   const handleJoinPublicGame = useCallback(
     (game: Game) => {
-      if (!isConnected) {
-        setError("Please connect your wallet to join a game.");
-        return;
-      }
       if (game.status === "PENDING") {
         router.push(`/game-waiting?gameCode=${encodeURIComponent(game.code)}`);
       }
     },
-    [isConnected, router]
+    [router]
   );
 
   const handleCreateNew = () => router.push("/game-settings");
@@ -230,7 +242,7 @@ export default function JoinRoom(): JSX.Element {
 
           {/* Games Section */}
           <div className="space-y-12">
-            {isConnected && (
+            {canAct && (
               <>
                 <div className="space-y-6">
                   <div className="flex justify-between items-center">
@@ -281,14 +293,14 @@ export default function JoinRoom(): JSX.Element {
                   )}
                 </div>
 
-                {recentGames.length > 0 && (
+                {activeRecentGames.length > 0 && (
                   <div className="space-y-6">
                     <h3 className="text-xl lg:text-2xl font-bold text-[#00F0FF] text-center font-orbitron">
                       Continue Game
                     </h3>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {recentGames.map((game) => (
+                      {activeRecentGames.map((game) => (
                         <button
                           key={game.id}
                           onClick={() => handleContinueGame(game)}
@@ -312,10 +324,18 @@ export default function JoinRoom(): JSX.Element {
               </>
             )}
 
-            {!isConnected && (
-              <p className="text-yellow-400 text-sm text-center mt-6 bg-yellow-900/30 p-3 rounded-lg font-orbitron">
-                Connect your wallet to join or continue games.
-              </p>
+            {!canAct && (
+              <div className="mt-6 space-y-3 text-center">
+                <p className="text-yellow-400 text-sm bg-yellow-900/30 p-3 rounded-lg font-orbitron">
+                  Connect your wallet or sign in as guest to join or continue games.
+                </p>
+                <a
+                  href="/"
+                  className="inline-block px-6 py-3 bg-[#00F0FF]/20 text-[#00F0FF] font-orbitron font-bold rounded-lg border border-[#00F0FF]/50 hover:bg-[#00F0FF]/30 transition-all"
+                >
+                  Sign in as guest (home)
+                </a>
+              </div>
             )}
           </div>
 

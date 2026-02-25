@@ -8,7 +8,7 @@ import { polygon } from '@reown/appkit/networks';
 
 const projectId = process.env.NEXT_PUBLIC_PROJECT_ID || '912f9a3279905a7dd417a7bf68e04209';
 
-// Setup wagmi adapter
+// Polygon only
 const wagmiAdapter = new WagmiAdapter({
   networks: [polygon],
   projectId,

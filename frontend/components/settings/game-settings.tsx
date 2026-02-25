@@ -34,8 +34,10 @@ import {
   useCreateGame,
   useApprove,
 } from "@/context/ContractProvider";
-import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS } from "@/constants/contracts";
+import { useGuestAuthOptional } from "@/context/GuestAuthContext";
+import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS, MINIPAY_CHAIN_IDS } from "@/constants/contracts";
 import { Address, parseUnits } from "viem";
+import { getContractErrorMessage } from "@/lib/utils/contractErrors";
 
 interface GameCreateResponse {
   data?: {
@@ -53,18 +55,20 @@ export default function GameSettings() {
   const { address } = useAccount();
   const wagmiChainId = useChainId();
   const { caipNetwork } = useAppKitNetwork();
+  const guestAuth = useGuestAuthOptional();
+  const isGuest = !!guestAuth?.guestUser;
 
   const { data: username } = useGetUsername(address);
   const { data: isUserRegistered, isLoading: isRegisteredLoading } = useIsRegistered(address);
 
-  
+  const isMiniPay = MINIPAY_CHAIN_IDS.includes(wagmiChainId);
   const chainName = caipNetwork?.name?.toLowerCase().replace(" ", "") || `chain-${wagmiChainId}` || "unknown";
 
   const [isFreeGame, setIsFreeGame] = useState(false);
 
   const [settings, setSettings] = useState({
     symbol: "hat",
-    maxPlayers: 4,
+    maxPlayers: 2,
     privateRoom: true,
     auction: true,
     rentInPrison: false,
@@ -73,7 +77,7 @@ export default function GameSettings() {
     randomPlayOrder: true,
     startingCash: 1500,
     stake: 10,
-    duration: 60,
+    duration: 10,
   });
 
   const [customStake, setCustomStake] = useState<string>("");
@@ -128,6 +132,48 @@ export default function GameSettings() {
   };
 
   const handlePlay = async () => {
+    if (isGuest) {
+      const toastId = toast.loading("Creating your game room...");
+      try {
+        toast.update(toastId, { render: "Creating game (guest)..." });
+        const res = await apiClient.post<any>("/games/create-as-guest", {
+          code: gameCode,
+          mode: gameType,
+          symbol: settings.symbol,
+          number_of_players: settings.maxPlayers,
+          stake: 0,
+          starting_cash: settings.startingCash,
+          is_ai: false,
+          is_minipay: isMiniPay,
+          chain: chainName,
+          duration: settings.duration,
+          use_usdc: false,
+          settings: {
+            auction: settings.auction,
+            rent_in_prison: settings.rentInPrison,
+            mortgage: settings.mortgage,
+            even_build: settings.evenBuild,
+            randomize_play_order: settings.randomPlayOrder,
+            starting_cash: settings.startingCash,
+          },
+        });
+        const data = (res as any)?.data;
+        const dbGameId = data?.data?.id ?? data?.id;
+        if (!dbGameId) throw new Error("Backend did not return game ID");
+        toast.update(toastId, {
+          render: `Game created! Share code: ${gameCode}`,
+          type: "success",
+          isLoading: false,
+          autoClose: 5000,
+          onClose: () => router.push(`/game-waiting?gameCode=${gameCode}`),
+        });
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || "Failed to create game";
+        toast.update(toastId, { render: msg, type: "error", isLoading: false, autoClose: 8000 });
+      }
+      return;
+    }
+
     if (!address || !username || !isUserRegistered) {
       toast.error("Please connect wallet and register first!", { autoClose: 5000 });
       return;
@@ -146,7 +192,6 @@ export default function GameSettings() {
     const toastId = toast.loading("Creating your game room...");
 
     try {
-      // Only need approval if NOT free game
       if (!isFreeGame) {
         let needsApproval = false;
         await refetchAllowance();
@@ -175,13 +220,13 @@ export default function GameSettings() {
           address,
           symbol: settings.symbol,
           number_of_players: settings.maxPlayers,
-          stake: finalStake,           // ← important: send 0 when free
+          stake: finalStake,
           starting_cash: settings.startingCash,
           is_ai: false,
-          is_minipay: false,
+          is_minipay: isMiniPay,
           chain: chainName,
           duration: settings.duration,
-          use_usdc: !isFreeGame,       // no USDC if free
+          use_usdc: !isFreeGame,
           settings: {
             auction: settings.auction,
             rent_in_prison: settings.rentInPrison,
@@ -210,14 +255,7 @@ export default function GameSettings() {
       });
     } catch (err: any) {
       console.error("Create game error:", err);
-      let message = "Failed to create game. Please try again.";
-      if (err.message?.includes("user rejected") || err.code === 4001) {
-        message = "Transaction cancelled.";
-      } else if (err.message?.includes("insufficient")) {
-        message = "Insufficient balance or gas.";
-      } else if (err.message) {
-        message = err.message;
-      }
+      const message = getContractErrorMessage(err, "Failed to create game. Please try again.");
 
       toast.update(toastId, {
         render: message,
@@ -228,7 +266,7 @@ export default function GameSettings() {
     }
   };
 
-  if (isRegisteredLoading) {
+  if (!isGuest && isRegisteredLoading) {
     return (
       <div className="w-full h-screen flex items-center justify-center bg-settings bg-cover">
         <p className="text-[#00F0FF] text-4xl font-orbitron animate-pulse tracking-wider">
@@ -237,6 +275,8 @@ export default function GameSettings() {
       </div>
     );
   }
+
+  const canCreate = isGuest || (address && username && isUserRegistered);
 
   return (
     <div className="min-h-screen bg-settings bg-cover bg-fixed flex items-center justify-center p-6">
@@ -313,7 +353,8 @@ export default function GameSettings() {
               </div>
             </div>
 
-            {/* Free Game Toggle */}
+            {/* Free Game Toggle - hidden for guests (guest games are free only) */}
+            {!isGuest && (
             <div className="bg-black/60 rounded-2xl p-6 border border-yellow-600/50 mt-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -335,9 +376,22 @@ export default function GameSettings() {
                 />
               </div>
             </div>
+            )}
+            {isGuest && (
+              <div className="bg-black/60 rounded-2xl p-6 border border-yellow-600/50 mt-4">
+                <div className="flex items-center gap-3">
+                  <FaCoins className="w-7 h-7 text-yellow-400" />
+                  <div>
+                    <h3 className="text-xl font-bold text-yellow-300">Guest games are free</h3>
+                    <p className="text-gray-400 text-sm">Connect a wallet to create staked games</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Column 2 - Stake */}
+          {/* Column 2 - Stake (hidden for guests) */}
+          {!isGuest && (
           <div className={`bg-gradient-to-b from-green-900/60 to-emerald-900/60 rounded-2xl p-8 border border-green-500/40 shadow-xl transition-opacity duration-300 ${isFreeGame ? 'opacity-50' : ''}`}>
             <div className="flex items-center gap-3 mb-6">
               <FaCoins className="w-8 h-8 text-green-400" />
@@ -390,6 +444,7 @@ export default function GameSettings() {
               </>
             )}
           </div>
+          )}
 
           {/* Column 3 */}
           <div className="space-y-6">
@@ -424,6 +479,8 @@ export default function GameSettings() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="2">2 minutes</SelectItem>
+                  <SelectItem value="10">10 minutes</SelectItem>
                   <SelectItem value="30">30 minutes</SelectItem>
                   <SelectItem value="45">45 minutes</SelectItem>
                   <SelectItem value="60">60 minutes</SelectItem>
@@ -464,15 +521,14 @@ export default function GameSettings() {
         <div className="flex justify-center mt-12">
           <button
             onClick={handlePlay}
-            disabled={isCreatePending || (approvePending || approveConfirming) && !isFreeGame}
+            disabled={!canCreate || (!isGuest && (isCreatePending || ((approvePending || approveConfirming) && !isFreeGame)))}
             className="relative px-24 py-6 text-3xl font-orbitron font-black tracking-widest
-                       bg-gradient-to-r from-cyan-500 via-purple-600 to-pink-600
-                       hover:from-pink-600 hover:via-purple-600 hover:to-cyan-500
+                       bg-[#00F0FF] hover:bg-[#0FF0FC] text-[#010F10]
                        rounded-2xl shadow-2xl transform hover:scale-105 active:scale-100
                        transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed
-                       border-4 border-white/20"
+                       border-4 border-[#00F0FF]/40"
           >
-            <span className="relative z-10 text-white drop-shadow-2xl">
+            <span className="relative z-10 drop-shadow-lg">
               {approvePending || approveConfirming
                 ? "APPROVING..."
                 : isCreatePending

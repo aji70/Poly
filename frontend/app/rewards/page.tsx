@@ -1,21 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import {
-  useAccount,
-  useChainId,
-  useReadContract,
-  useReadContracts,
-} from 'wagmi';
-import { parseUnits, formatUnits, type Address, type Abi } from 'viem';
+import React from 'react';
+import { formatUnits } from 'viem';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Zap,
   Crown,
-  Coins,
-  Sparkles,
-  Gem,
-  Shield,
   DollarSign,
   Wallet,
   Package,
@@ -23,6 +12,7 @@ import {
   Settings,
   PlusCircle,
   Gift,
+  Gem,
   Banknote,
   PauseCircle,
   PlayCircle,
@@ -30,492 +20,76 @@ import {
   Edit2,
   Ticket,
   Star,
+  Gamepad2,
 } from 'lucide-react';
 
-import RewardABI from '@/context/abi/rewardabi.json';
 import {
-  REWARD_CONTRACT_ADDRESSES,
-  USDC_TOKEN_ADDRESS,
-  TYC_TOKEN_ADDRESS,
-} from '@/constants/contracts';
-
-// Import ALL admin reward hooks from your context
-import {
-  useRewardSetBackendMinter,
-  useRewardMintVoucher,
-  useRewardMintCollectible,
-  useRewardStockShop,
-  useRewardRestockCollectible,
-  useRewardUpdateCollectiblePrices,
-  useRewardPause,
-  useRewardWithdrawFunds,
-} from '@/context/ContractProvider'; 
-
-// Assuming apiClient is imported from your API utilities
-import { apiClient } from "@/lib/api";
-import { ApiResponse } from '@/types/api';
-
-enum CollectiblePerk {
-  NONE = 0,
-  EXTRA_TURN = 1,
-  JAIL_FREE = 2,
-  DOUBLE_RENT = 3,
-  ROLL_BOOST = 4,
-  CASH_TIERED = 5,
-  TELEPORT = 6,
-  SHIELD = 7,
-  PROPERTY_DISCOUNT = 8,
-  TAX_REFUND = 9,
-  ROLL_EXACT = 10,
-}
-
-const PERK_NAMES: Record<CollectiblePerk, string> = {
-  [CollectiblePerk.NONE]: 'None',
-  [CollectiblePerk.EXTRA_TURN]: 'Extra Turn',
-  [CollectiblePerk.JAIL_FREE]: 'Get Out of Jail Free',
-  [CollectiblePerk.DOUBLE_RENT]: 'Double Rent',
-  [CollectiblePerk.ROLL_BOOST]: 'Roll Boost',
-  [CollectiblePerk.CASH_TIERED]: 'Instant Cash (Tiered)',
-  [CollectiblePerk.TELEPORT]: 'Teleport',
-  [CollectiblePerk.SHIELD]: 'Shield',
-  [CollectiblePerk.PROPERTY_DISCOUNT]: 'Property Discount',
-  [CollectiblePerk.TAX_REFUND]: 'Tax Refund (Tiered)',
-  [CollectiblePerk.ROLL_EXACT]: 'Exact Roll',
-};
-
-const ERC20_ABI = [
-  {
-    constant: true,
-    inputs: [{ name: '_owner', type: 'address' }],
-    name: 'balanceOf',
-    outputs: [{ name: 'balance', type: 'uint256' }],
-    type: 'function',
-  },
-  {
-    constant: true,
-    inputs: [],
-    name: 'decimals',
-    outputs: [{ name: '', type: 'uint8' }],
-    type: 'function',
-  },
-] as const;
-
-const INITIAL_COLLECTIBLES = [
-  { perk: CollectiblePerk.EXTRA_TURN, name: "Extra Turn", strength: 1, tycPrice: "0.75", usdcPrice: "0.08", icon: <Zap className="w-8 h-8" /> },
-  { perk: CollectiblePerk.ROLL_BOOST, name: "Roll Boost", strength: 1, tycPrice: "1.0", usdcPrice: "0.10", icon: <Sparkles className="w-8 h-8" /> },
-  { perk: CollectiblePerk.PROPERTY_DISCOUNT, name: "Property Discount", strength: 1, tycPrice: "1.25", usdcPrice: "0.25", icon: <Coins className="w-8 h-8" /> },
-  { perk: CollectiblePerk.SHIELD, name: "Shield", strength: 1, tycPrice: "1.5", usdcPrice: "0.40", icon: <Shield className="w-8 h-8" /> },
-  { perk: CollectiblePerk.TELEPORT, name: "Teleport", strength: 1, tycPrice: "1.8", usdcPrice: "0.60", icon: <Zap className="w-8 h-8" /> },
-  { perk: CollectiblePerk.ROLL_EXACT, name: "Exact Roll (Legendary)", strength: 1, tycPrice: "2.5", usdcPrice: "1.00", icon: <Sparkles className="w-8 h-8" /> },
-  { perk: CollectiblePerk.CASH_TIERED, name: "Cash Tier 1", strength: 1, tycPrice: "0.5", usdcPrice: "0.05", icon: <Gem className="w-8 h-8" /> },
-  { perk: CollectiblePerk.CASH_TIERED, name: "Cash Tier 2", strength: 2, tycPrice: "0.8", usdcPrice: "0.15", icon: <Gem className="w-8 h-8" /> },
-  { perk: CollectiblePerk.CASH_TIERED, name: "Cash Tier 3", strength: 3, tycPrice: "1.2", usdcPrice: "0.30", icon: <Gem className="w-8 h-8" /> },
-  { perk: CollectiblePerk.CASH_TIERED, name: "Cash Tier 4", strength: 4, tycPrice: "1.6", usdcPrice: "0.50", icon: <Gem className="w-8 h-8" /> },
-  { perk: CollectiblePerk.CASH_TIERED, name: "Cash Tier 5", strength: 5, tycPrice: "2.0", usdcPrice: "0.90", icon: <Gem className="w-8 h-8" /> },
-] as const;
-
-const AnimatedCounter = ({ to, duration = 2 }: { to: number; duration?: number }) => {
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    let startTime: number | null = null;
-    const from = 0;
-    const animateCount = (timestamp: number) => {
-      if (!startTime) startTime = timestamp;
-      const progress = (timestamp - startTime) / (duration * 1000);
-      if (progress < 1) {
-        setCount(Math.round(from + progress * (to - from)));
-        requestAnimationFrame(animateCount);
-      } else {
-        setCount(to);
-      }
-    };
-    requestAnimationFrame(animateCount);
-    return () => {
-      startTime = null;
-    };
-  }, [to, duration]);
-
-  return <span>{count}</span>;
-};
+  CollectiblePerk,
+  PERK_NAMES,
+  INITIAL_COLLECTIBLES,
+} from '@/components/rewards/rewardsConstants';
+import { AnimatedCounter } from '@/components/rewards/AnimatedCounter';
+import { useRewardsAdmin } from './useRewardsAdmin';
 
 export default function RewardAdminPanel() {
-  const { address: userAddress, isConnected } = useAccount();
-  const chainId = useChainId();
-
-  const contractAddress = REWARD_CONTRACT_ADDRESSES[chainId as keyof typeof REWARD_CONTRACT_ADDRESSES] as Address | undefined;
-  const usdcAddress = USDC_TOKEN_ADDRESS[chainId as keyof typeof USDC_TOKEN_ADDRESS] as Address | undefined;
-  const tycAddress = TYC_TOKEN_ADDRESS[chainId as keyof typeof TYC_TOKEN_ADDRESS] as Address | undefined;
-
-  const [activeSection, setActiveSection] = useState<'overview' | 'mint' | 'stock' | 'manage' | 'funds'>('overview');
-  const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
-  const [isPaused, setIsPaused] = useState(false);
-  const [backendMinter, setBackendMinter] = useState<Address | null>(null);
-  const [owner, setOwner] = useState<Address | null>(null);
-  const [totalGames, setTotalGames] = useState(0);
-  const [totalUsers, setTotalUsers] = useState(0);
-
-  // Form states
-  const [newMinter, setNewMinter] = useState('');
-  const [voucherRecipient, setVoucherRecipient] = useState('');
-  const [voucherValue, setVoucherValue] = useState('');
-  const [collectibleRecipient, setCollectibleRecipient] = useState('');
-  const [selectedPerk, setSelectedPerk] = useState<CollectiblePerk>(CollectiblePerk.EXTRA_TURN);
-  const [collectibleStrength, setCollectibleStrength] = useState('1');
-  const [restockTokenId, setRestockTokenId] = useState('');
-  const [restockAmount, setRestockAmount] = useState('50');
-  const [updateTokenId, setUpdateTokenId] = useState('');
-  const [updateTycPrice, setUpdateTycPrice] = useState('');
-  const [updateUsdcPrice, setUpdateUsdcPrice] = useState('');
-  const [withdrawToken, setWithdrawToken] = useState<'TYC' | 'USDC'>('TYC');
-  const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [withdrawTo, setWithdrawTo] = useState('');
-
-  // Admin hooks from context
   const {
-    setMinter: setBackendMinterFn,
-    isPending: pendingMinter,
-    isSuccess: successMinter,
-    error: errorMinter,
-    txHash: txMinter,
-    reset: resetMinter,
-  } = useRewardSetBackendMinter();
+    auth,
+    state,
+    contract,
+    handlers,
+    pending,
+  } = useRewardsAdmin();
 
   const {
-    mint: mintVoucher,
-    isPending: pendingVoucher,
-    isSuccess: successVoucher,
-    error: errorVoucher,
-    txHash: txVoucher,
-    reset: resetVoucher,
-  } = useRewardMintVoucher();
+    activeSection,
+    setActiveSection,
+    status,
+    isPaused,
+    backendMinter,
+    owner,
+    totalGames,
+    totalUsers,
+    newMinter,
+    setNewMinter,
+    voucherRecipient,
+    setVoucherRecipient,
+    voucherValue,
+    setVoucherValue,
+    collectibleRecipient,
+    setCollectibleRecipient,
+    selectedPerk,
+    setSelectedPerk,
+    collectibleStrength,
+    setCollectibleStrength,
+    restockTokenId,
+    setRestockTokenId,
+    restockAmount,
+    setRestockAmount,
+    updateTokenId,
+    setUpdateTokenId,
+    updateTycPrice,
+    setUpdateTycPrice,
+    updateUsdcPrice,
+    setUpdateUsdcPrice,
+    withdrawToken,
+    setWithdrawToken,
+    withdrawAmount,
+    setWithdrawAmount,
+    withdrawTo,
+    setWithdrawTo,
+    tycoonMinStake,
+    setTycoonMinStake,
+    tycoonMinTurnsForPerks,
+    setTycoonMinTurnsForPerks,
+    tycoonGameController,
+    setTycoonGameController,
+    tycoonReads,
+  } = state;
 
-  const {
-    mint: mintCollectible,
-    isPending: pendingCollectible,
-    isSuccess: successCollectible,
-    error: errorCollectible,
-    txHash: txCollectible,
-    reset: resetCollectible,
-  } = useRewardMintCollectible();
+  const { tokenCount, allTokens, tycBalance, usdcBalance } = contract;
+  const { anyPending, currentTxHash, pendingMinter, pendingVoucher, pendingCollectible, pendingStock, pendingRestock, pendingUpdate, pendingPause, pendingWithdraw, pendingTycoonMinStake, pendingTycoonMinTurns, pendingTycoonController } = pending;
 
-  const {
-    stock: stockShop,
-    isPending: pendingStock,
-    isSuccess: successStock,
-    error: errorStock,
-    txHash: txStock,
-    reset: resetStock,
-  } = useRewardStockShop();
-
-  const {
-    restock,
-    isPending: pendingRestock,
-    isSuccess: successRestock,
-    error: errorRestock,
-    txHash: txRestock,
-    reset: resetRestock,
-  } = useRewardRestockCollectible();
-
-  const {
-    update,
-    isPending: pendingUpdate,
-    isSuccess: successUpdate,
-    error: errorUpdate,
-    txHash: txUpdate,
-    reset: resetUpdate,
-  } = useRewardUpdateCollectiblePrices();
-
-  const {
-    pause,
-    unpause,
-    isPending: pendingPause,
-    isSuccess: successPause,
-    error: errorPause,
-    txHash: txPause,
-    reset: resetPause,
-  } = useRewardPause();
-
-  const {
-    withdraw,
-    isPending: pendingWithdraw,
-    isSuccess: successWithdraw,
-    error: errorWithdraw,
-    txHash: txWithdraw,
-    reset: resetWithdraw,
-  } = useRewardWithdrawFunds();
-
-  // Contract state reads
-  const pausedResult = useReadContract({
-    address: contractAddress,
-    abi: RewardABI,
-    functionName: 'paused',
-    query: { enabled: !!contractAddress },
-  });
-
-  const backendMinterResult = useReadContract({
-    address: contractAddress,
-    abi: RewardABI,
-    functionName: 'backendMinter',
-    query: { enabled: !!contractAddress },
-  });
-
-  const ownerResult = useReadContract({
-    address: contractAddress,
-    abi: RewardABI,
-    functionName: 'owner',
-    query: { enabled: !!contractAddress },
-  });
-
-  const tycBalance = useReadContract({
-    address: tycAddress,
-    abi: ERC20_ABI,
-    functionName: 'balanceOf',
-    args: contractAddress ? [contractAddress] : undefined,
-    query: { enabled: !!contractAddress && !!tycAddress },
-  });
-
-  const usdcBalance = useReadContract({
-    address: usdcAddress,
-    abi: ERC20_ABI,
-    functionName: 'balanceOf',
-    args: contractAddress ? [contractAddress] : undefined,
-    query: { enabled: !!contractAddress && !!usdcAddress },
-  });
-
-  // Token holdings for overview
-  const contractTokenCount = useReadContract({
-    address: contractAddress,
-    abi: RewardABI,
-    functionName: 'ownedTokenCount',
-    args: contractAddress ? [contractAddress] : undefined,
-    query: { enabled: !!contractAddress },
-  });
-
-  const tokenCount = Number(contractTokenCount.data ?? 0);
-
-  const tokenOfOwnerCalls = Array.from({ length: tokenCount }, (_, i) => ({
-    address: contractAddress!,
-    abi: RewardABI as Abi,
-    functionName: 'tokenOfOwnerByIndex',
-    args: [contractAddress!, BigInt(i)],
-  } as const));
-
-  const tokenIdResults = useReadContracts({
-    contracts: tokenOfOwnerCalls,
-    allowFailure: true,
-    query: { enabled: !!contractAddress && tokenCount > 0 },
-  });
-
-  const allTokenIds = tokenIdResults.data
-    ?.map((res) => (res.status === 'success' ? res.result : undefined))
-    .filter((id): id is bigint => id !== undefined) ?? [];
-
-  const collectibleInfoCalls = allTokenIds.map((tokenId) => ({
-    address: contractAddress!,
-    abi: RewardABI as Abi,
-    functionName: 'getCollectibleInfo',
-    args: [tokenId],
-  } as const));
-
-  const tokenInfoResults = useReadContracts({
-    contracts: collectibleInfoCalls,
-    allowFailure: true,
-    query: { enabled: !!contractAddress && allTokenIds.length > 0 },
-  });
-
-  const allTokens = tokenInfoResults.data
-    ?.map((result, index) => {
-      if (result?.status !== 'success') return null;
-      const [perk, , tycPrice, usdcPrice, stock] = result.result as [number, bigint, bigint, bigint, bigint];
-      const tokenId = allTokenIds[index];
-      const isVoucher = tokenId < 2_000_000_000;
-      const isCollectible = tokenId >= 2_000_000_000;
-
-      return {
-        tokenId,
-        perk: isCollectible ? (perk as CollectiblePerk) : undefined,
-        name: isVoucher
-          ? `Voucher #${tokenId.toString()}`
-          : PERK_NAMES[perk as CollectiblePerk] || `Collectible #${perk}`,
-        type: isVoucher ? 'voucher' : 'collectible',
-        tycPrice,
-        usdcPrice,
-        stock,
-        icon: isVoucher ? <Ticket className="w-12 h-12" /> : <Star className="w-12 h-12" />,
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => item !== null) ?? [];
-
-  // Fetch total games and users
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const gamesRes = await apiClient.get<ApiResponse>('/games');
-        setTotalGames(gamesRes.data?.data.length);
-        const usersRes = await apiClient.get<any[]>('/users');
-        setTotalUsers(usersRes.data?.length ?? 0);
-        
-      } catch (error) {
-        console.error('Failed to fetch platform stats:', error);
-        // Optionally set status to show error
-      }
-    };
-
-    fetchStats();
-  }, []);
-
-  // Update local state from contract reads
-  useEffect(() => {
-    setIsPaused(!!pausedResult.data);
-    setBackendMinter((backendMinterResult.data as Address) ?? null);
-    setOwner((ownerResult.data as Address) ?? null);
-    setWithdrawTo((ownerResult.data as string) ?? '');
-  }, [pausedResult.data, backendMinterResult.data, ownerResult.data]);
-
-  // Global success/error feedback
-  useEffect(() => {
-    const successes = [
-      successMinter,
-      successVoucher,
-      successCollectible,
-      successStock,
-      successRestock,
-      successUpdate,
-      successPause,
-      successWithdraw,
-    ];
-    if (successes.some(Boolean)) {
-      setStatus({ type: 'success', message: 'Transaction successful!' });
-      resetMinter?.();
-      resetVoucher?.();
-      resetCollectible?.();
-      resetStock?.();
-      resetRestock?.();
-      resetUpdate?.();
-      resetPause?.();
-      resetWithdraw?.();
-    }
-  }, [
-    successMinter,
-    successVoucher,
-    successCollectible,
-    successStock,
-    successRestock,
-    successUpdate,
-    successPause,
-    successWithdraw,
-  ]);
-
-  useEffect(() => {
-    const errors = [
-      errorMinter,
-      errorVoucher,
-      errorCollectible,
-      errorStock,
-      errorRestock,
-      errorUpdate,
-      errorPause,
-      errorWithdraw,
-    ].filter(Boolean);
-    if (errors.length > 0) {
-      setStatus({ type: 'error', message: errors[0]?.message || 'Transaction failed' });
-    }
-  }, [
-    errorMinter,
-    errorVoucher,
-    errorCollectible,
-    errorStock,
-    errorRestock,
-    errorUpdate,
-    errorPause,
-    errorWithdraw,
-  ]);
-
-  // Handlers using context hooks
-  const handleSetBackendMinter = async () => {
-    if (!newMinter) return;
-    await setBackendMinterFn(newMinter as Address);
-    setNewMinter('');
-  };
-
-  const handleMintVoucher = async () => {
-    if (!voucherRecipient || !voucherValue) return;
-    const valueWei = parseUnits(voucherValue, 18);
-    await mintVoucher(voucherRecipient as Address, valueWei);
-    setVoucherRecipient('');
-    setVoucherValue('');
-  };
-
-  const handleMintCollectible = async () => {
-    if (!collectibleRecipient) return;
-    await mintCollectible(collectibleRecipient as Address, selectedPerk, Number(collectibleStrength || 1));
-    setCollectibleRecipient('');
-    setCollectibleStrength('1');
-  };
-
-  const handleStockShop = async (perk: CollectiblePerk, strength: number) => {
-    const selectedItem = INITIAL_COLLECTIBLES.find(
-      (item) => item.perk === perk && item.strength === strength
-    );
-    const tycPrice = selectedItem
-      ? parseUnits(selectedItem.tycPrice, 18)
-      : parseUnits("1.0", 18);
-    const usdcPrice = selectedItem
-      ? parseUnits(selectedItem.usdcPrice, 6)
-      : parseUnits("0.20", 6);
-
-    await stockShop(50, perk, strength, Number(tycPrice), Number(usdcPrice));
-  };
-
-  const handleRestock = async () => {
-    if (!restockTokenId || !restockAmount) return;
-    await restock(BigInt(restockTokenId), BigInt(restockAmount));
-    setRestockTokenId('');
-    setRestockAmount('50');
-  };
-
-  const handleUpdatePrices = async () => {
-    if (!updateTokenId) return;
-    const tycWei = updateTycPrice ? parseUnits(updateTycPrice, 18) : 0;
-    const usdcWei = updateUsdcPrice ? parseUnits(updateUsdcPrice, 6) : 0;
-    await update(BigInt(updateTokenId), BigInt(tycWei), BigInt(usdcWei));
-    setUpdateTokenId('');
-    setUpdateTycPrice('');
-    setUpdateUsdcPrice('');
-  };
-
-  const handleWithdraw = async () => {
-    if (!withdrawAmount || !withdrawTo) return;
-    const tokenAddr = withdrawToken === 'TYC' ? tycAddress! : usdcAddress!;
-    const decimals = withdrawToken === 'TYC' ? 18 : 6;
-    const amountWei = parseUnits(withdrawAmount, decimals);
-    await withdraw(tokenAddr, withdrawTo as Address, amountWei);
-    setWithdrawAmount('');
-  };
-
-  const anyPending =
-    pendingMinter ||
-    pendingVoucher ||
-    pendingCollectible ||
-    pendingStock ||
-    pendingRestock ||
-    pendingUpdate ||
-    pendingPause ||
-    pendingWithdraw;
-
-  const currentTxHash =
-    txMinter ||
-    txVoucher ||
-    txCollectible ||
-    txStock ||
-    txRestock ||
-    txUpdate ||
-    txPause ||
-    txWithdraw;
-
-  // Early returns
-  if (!isConnected || !userAddress) {
+  if (!auth.isConnected || !auth.userAddress) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0a0f1a] to-[#0f1a27]">
         <motion.div
@@ -531,15 +105,15 @@ export default function RewardAdminPanel() {
     );
   }
 
-  if (!contractAddress) {
+  if (!auth.contractAddress) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0a0f1a] to-[#0f1a27] text-rose-400 text-2xl">
-        No Reward contract deployed on chain {chainId}
+        No Reward contract deployed on chain {auth.chainId}
       </div>
     );
   }
 
-  if (owner && owner.toLowerCase() !== userAddress.toLowerCase()) {
+  if (!auth.isOwner) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0a0f1a] to-[#0f1a27]">
         <motion.div
@@ -572,7 +146,7 @@ export default function RewardAdminPanel() {
         </motion.div>
 
         <div className="flex flex-wrap justify-center gap-4 mb-10">
-          {(['overview', 'mint', 'stock', 'manage', 'funds'] as const).map((section) => (
+          {(['overview', 'mint', 'stock', 'manage', 'tycoon', 'funds'] as const).map((section) => (
             <button
               key={section}
               onClick={() => setActiveSection(section)}
@@ -586,8 +160,9 @@ export default function RewardAdminPanel() {
               {section === 'mint' && <PlusCircle className="w-5 h-5" />}
               {section === 'stock' && <Package className="w-5 h-5" />}
               {section === 'manage' && <Edit2 className="w-5 h-5" />}
+              {section === 'tycoon' && <Gamepad2 className="w-5 h-5" />}
               {section === 'funds' && <Wallet className="w-5 h-5" />}
-              {section.charAt(0).toUpperCase() + section.slice(1)}
+              {section === 'tycoon' ? 'Game Contract' : section.charAt(0).toUpperCase() + section.slice(1)}
             </button>
           ))}
         </div>
@@ -675,7 +250,7 @@ export default function RewardAdminPanel() {
                       <div className="absolute inset-0 bg-white/5 backdrop-blur-xl" />
                       <div className="relative z-10">
                         <div className={`mx-auto mb-4 p-4 rounded-full ${item.type === 'voucher' ? 'bg-amber-900/60' : 'bg-purple-900/60'}`}>
-                          {item.icon}
+                          {item.type === 'voucher' ? <Ticket className="w-12 h-12" /> : <Star className="w-12 h-12" />}
                         </div>
                         <h4 className="font-bold text-lg mb-2 truncate">{item.name}</h4>
                         <p className="text-xs opacity-80 mb-4">ID: {item.tokenId.toString()}</p>
@@ -723,7 +298,7 @@ export default function RewardAdminPanel() {
                   className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button
-                  onClick={handleMintVoucher}
+                  onClick={handlers.handleMintVoucher}
                   disabled={anyPending || !voucherRecipient || !voucherValue}
                   className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
@@ -763,7 +338,7 @@ export default function RewardAdminPanel() {
                   className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
                 />
                 <button
-                  onClick={handleMintCollectible}
+                  onClick={handlers.handleMintCollectible}
                   disabled={anyPending || !collectibleRecipient}
                   className="w-full py-3 bg-purple-600 hover:bg-purple-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
@@ -815,7 +390,7 @@ export default function RewardAdminPanel() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleStockShop(item.perk, item.strength);
+                      handlers.handleStockShop(item.perk, item.strength);
                     }}
                     disabled={anyPending}
                     className="w-full py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 rounded-xl font-bold transition disabled:opacity-50 shadow-md"
@@ -843,7 +418,7 @@ export default function RewardAdminPanel() {
                   className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-yellow-500"
                 />
                 <button
-                  onClick={handleSetBackendMinter}
+                  onClick={handlers.handleSetBackendMinter}
                   disabled={anyPending || !newMinter}
                   className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
@@ -858,14 +433,14 @@ export default function RewardAdminPanel() {
               </h3>
               <div className="flex gap-4">
                 <button
-                  onClick={() => pause()}
+                  onClick={() => handlers.pause()}
                   disabled={anyPending || isPaused}
                   className="flex-1 py-3 bg-red-600 hover:bg-red-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
                   {pendingPause ? 'Pausing...' : 'Pause'}
                 </button>
                 <button
-                  onClick={() => unpause()}
+                  onClick={() => handlers.unpause()}
                   disabled={anyPending || !isPaused}
                   className="flex-1 py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
@@ -894,7 +469,7 @@ export default function RewardAdminPanel() {
                   className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button
-                  onClick={handleRestock}
+                  onClick={handlers.handleRestock}
                   disabled={anyPending || !restockTokenId || !restockAmount}
                   className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
@@ -932,13 +507,87 @@ export default function RewardAdminPanel() {
                   className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500"
                 />
                 <button
-                  onClick={handleUpdatePrices}
+                  onClick={handlers.handleUpdatePrices}
                   disabled={anyPending || !updateTokenId}
                   className="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl font-bold transition disabled:opacity-50"
                 >
                   {pendingUpdate ? 'Updating...' : 'Update Prices'}
                 </button>
               </div>
+            </div>
+          </motion.div>
+        )}
+
+        {activeSection === 'tycoon' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-4xl mx-auto space-y-8">
+            <div className="bg-gray-900/50 rounded-2xl p-8 border border-gray-700/50">
+              <h3 className="text-2xl font-bold mb-2 flex items-center gap-2">
+                <Gamepad2 className="w-8 h-8 text-cyan-400" /> Tycoon Game Contract
+              </h3>
+              <p className="text-gray-400 mb-6">
+                Owner-only settings. Min stake is in USDC (e.g. 1 = 1 USDC). Game controller can call removePlayerFromGame, setTurnCount, transferPropertyOwnership.
+              </p>
+              {tycoonReads.isLoading ? (
+                <div className="text-gray-400">Loading...</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-600/50">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Min Stake (USDC)</label>
+                    <p className="text-xs text-gray-500 mb-2">Minimum USDC per player to join a staked game (6 decimals).</p>
+                    <input
+                      type="text"
+                      placeholder="e.g. 1"
+                      value={tycoonMinStake}
+                      onChange={(e) => setTycoonMinStake(e.target.value)}
+                      className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-3"
+                    />
+                    <button
+                      onClick={handlers.handleSetTycoonMinStake}
+                      disabled={anyPending || !tycoonMinStake}
+                      className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 rounded-xl font-bold transition disabled:opacity-50"
+                    >
+                      {pendingTycoonMinStake ? 'Updating...' : 'Set Min Stake'}
+                    </button>
+                  </div>
+                  <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-600/50">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Min Turns for Perks</label>
+                    <p className="text-xs text-gray-500 mb-2">Minimum turns played to get full exit perks (0 = disabled).</p>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder={tycoonReads.minTurnsForPerks?.toString() ?? '0'}
+                      value={tycoonMinTurnsForPerks}
+                      onChange={(e) => setTycoonMinTurnsForPerks(e.target.value)}
+                      className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-3"
+                    />
+                    <button
+                      onClick={handlers.handleSetTycoonMinTurnsForPerks}
+                      disabled={anyPending || tycoonMinTurnsForPerks === ''}
+                      className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 rounded-xl font-bold transition disabled:opacity-50"
+                    >
+                      {pendingTycoonMinTurns ? 'Updating...' : 'Set Min Turns'}
+                    </button>
+                  </div>
+                  <div className="md:col-span-2 bg-gray-800/50 rounded-xl p-6 border border-gray-600/50">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Backend Game Controller</label>
+                    <p className="text-xs text-gray-500 mb-2">Address allowed to call removePlayerFromGame, setTurnCount, transferPropertyOwnership. Use 0x0 to clear.</p>
+                    <input
+                      type="text"
+                      placeholder="0x..."
+                      value={tycoonGameController}
+                      onChange={(e) => setTycoonGameController(e.target.value)}
+                      className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-3 font-mono text-sm"
+                    />
+                    <button
+                      onClick={handlers.handleSetTycoonGameController}
+                      disabled={anyPending || !tycoonGameController.trim()}
+                      className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 rounded-xl font-bold transition disabled:opacity-50"
+                    >
+                      {pendingTycoonController ? 'Updating...' : 'Set Game Controller'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -973,7 +622,7 @@ export default function RewardAdminPanel() {
                 className="w-full px-4 py-3 bg-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-yellow-500"
               />
               <button
-                onClick={handleWithdraw}
+                onClick={handlers.handleWithdraw}
                 disabled={anyPending || !withdrawAmount || !withdrawTo}
                 className="w-full py-3 bg-yellow-600 hover:bg-yellow-500 rounded-xl font-bold transition disabled:opacity-50"
               >
@@ -991,7 +640,7 @@ export default function RewardAdminPanel() {
           >
             <p className="text-xl font-bold text-green-300 text-center">Transaction Sent!</p>
             <a
-              href={`https://polygonscan.com.io/tx/${currentTxHash}`}
+              href={`https://polygonscan.com/tx/${currentTxHash}`}
               target="_blank"
               rel="noopener noreferrer"
               className="block mt-3 text-cyan-300 underline text-center"

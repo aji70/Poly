@@ -1,462 +1,57 @@
 "use client";
+// Guest (no-wallet) support: same useWaitingRoom() as desktop; guests can join via API (join-as-guest).
 
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import React from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { PiTelegramLogoLight } from "react-icons/pi";
 import { FaXTwitter, FaCoins } from "react-icons/fa6";
 import { SiFarcaster } from "react-icons/si";
 import { IoCopyOutline, IoHomeOutline } from "react-icons/io5";
-import { House } from "lucide-react";
-import { useAccount, useChainId, useReadContract } from "wagmi";
-import {
-  useGetUsername,
-  useJoinGame,
-  useGetGameByCode,
-  useApprove,
-} from "@/context/ContractProvider";
-import { apiClient } from "@/lib/api";
-import { Game } from "@/lib/types/games";
-import { getPlayerSymbolData, PlayerSymbol, symbols } from "@/lib/types/symbol";
-import { ApiResponse } from "@/types/api";
-import Erc20Abi from '@/context/abi/ERC20abi.json';
-import { TYCOON_CONTRACT_ADDRESSES, USDC_TOKEN_ADDRESS } from "@/constants/contracts";
-import { Address } from "viem";
-import { toast } from "react-toastify";
-
-const POLL_INTERVAL = 5000; // ms
-const COPY_FEEDBACK_MS = 2000;
-const USDC_DECIMALS = 6;
+import { useWaitingRoom, USDC_DECIMALS } from "./useWaitingRoom";
+import { getPlayerSymbolData, symbols } from "@/lib/types/symbol";
+import GameRoomLoading from "./game-room-loading";
 
 export default function GameWaitingMobile(): JSX.Element {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const rawGameCode = searchParams.get("gameCode") ?? "";
-  const gameCode = rawGameCode.trim().toUpperCase();
-
-  const { address } = useAccount();
-  const chainId = useChainId();
-
-  // Local UI state
-  const [game, setGame] = useState<Game | null>(null);
-  const [playerSymbol, setPlayerSymbol] = useState<PlayerSymbol | null>(null);
-  const [availableSymbols, setAvailableSymbols] =
-    useState<PlayerSymbol[]>(symbols);
-  const [isJoined, setIsJoined] = useState<boolean>(false);
-  const [copySuccess, setCopySuccess] = useState<string | null>(null);
-  const [copySuccessFarcaster, setCopySuccessFarcaster] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [actionLoading, setActionLoading] = useState<boolean>(false);
-
-  // Contract hooks
   const {
-    data: contractGame,
-    isLoading: contractGameLoading,
-    error: contractGameError,
-  } = useGetGameByCode(gameCode, { enabled: !!gameCode });
-
-  const contractId = contractGame?.id ?? null;
-  const { data: username } = useGetUsername(address);
-
-  const contractAddress = TYCOON_CONTRACT_ADDRESSES[chainId as keyof typeof TYCOON_CONTRACT_ADDRESSES] as Address | undefined;
-  const usdcTokenAddress = USDC_TOKEN_ADDRESS[chainId as keyof typeof USDC_TOKEN_ADDRESS] as Address | undefined;
-
-  const { data: usdcAllowance, refetch: refetchAllowance } = useReadContract({
-    address: usdcTokenAddress,
-    abi: Erc20Abi,
-    functionName: 'allowance',
-    args: address && contractAddress ? [address, contractAddress] : undefined,
-    query: { enabled: !!address && !!usdcTokenAddress && !!contractAddress },
-  });
-
-  const {
-    approve: approveUSDC,
-    isPending: approvePending,
-    isConfirming: approveConfirming,
-  } = useApprove();
-
-  const stakePerPlayer = contractGame?.stakePerPlayer ? BigInt(contractGame.stakePerPlayer) : BigInt(0);
-
-  const {
-    write: joinGame,
-    isPending: isJoining,
-    error: joinError,
-  } = useJoinGame(
-    contractId ? BigInt(contractId) : BigInt(0),
-    username ?? "",
-    playerSymbol?.value ?? "",
+    router,
     gameCode,
-    stakePerPlayer
-  );
-
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // Safe origin for SSR
-  const origin = useMemo(() => {
-    try {
-      if (typeof window === "undefined") return "";
-      return window.location?.origin ?? "";
-    } catch {
-      return "";
-    }
-  }, []);
-
-  const gameUrl = useMemo(
-    () => `${origin}/game-waiting?gameCode=${encodeURIComponent(gameCode)}`,
-    [origin, gameCode]
-  );
-
-  const farcasterMiniappUrl = useMemo(
-    () =>
-      `https://farcaster.xyz/miniapps/bylqDd2BdAR5/tycoon/game-waiting?gameCode=${encodeURIComponent(gameCode)}`,
-    [gameCode]
-  );
-
-  const shareText = useMemo(
-    () =>
-      `Join my Tycoon game! Code: ${gameCode}. Waiting room: ${gameUrl}`,
-    [gameCode, gameUrl]
-  );
-
-  const farcasterShareText = useMemo(
-    () => `Join my Tycoon game! Code: ${gameCode}.`,
-    [gameCode]
-  );
-
-  const telegramShareUrl = useMemo(
-    () =>
-      `https://t.me/share/url?url=${encodeURIComponent(
-        gameUrl
-      )}&text=${encodeURIComponent(shareText)}`,
-    [gameUrl, shareText]
-  );
-
-  const twitterShareUrl = useMemo(
-    () => `https://x.com/intent/tweet?text=${encodeURIComponent(shareText)}`,
-    [shareText]
-  );
-
-  const farcasterShareUrl = useMemo(
-    () =>
-      `https://warpcast.com/~/compose?text=${encodeURIComponent(farcasterShareText)}&embeds[]=${encodeURIComponent(farcasterMiniappUrl)}`,
-    [farcasterShareText, farcasterMiniappUrl]
-  );
-
-  // Helpers
-  const computeAvailableSymbols = useCallback((g: Game | null) => {
-    if (!g) return symbols;
-    const taken = new Set(g.players.map((p) => p.symbol));
-    return symbols.filter((s) => !taken.has(s.value));
-  }, []);
-
-  const checkPlayerJoined = useCallback(
-    (g: Game | null) => {
-      if (!g || !address) return false;
-      return g.players.some(
-        (p) => p.address.toLowerCase() === address.toLowerCase()
-      );
-    },
-    [address]
-  );
-
-  // Determine if current user is the creator
-  const isCreator = useMemo(() => {
-    if (!game || !address) return false;
-    return address.toLowerCase() === String(contractGame?.creator).toLowerCase();
-  }, [game, address, contractGame]);
-
-  // Show share section if there are open slots OR if user is the creator
-  const showShare = useMemo(() => {
-    if (!game) return false;
-    return game.players.length < game.number_of_players || isCreator;
-  }, [game, isCreator]);
-
-  // Copy handlers with fallback
-  const handleCopyLink = useCallback(async () => {
-    if (!gameUrl) {
-      setError("No shareable URL available.");
-      return;
-    }
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(gameUrl);
-      } else {
-        // fallback
-        const el = document.createElement("textarea");
-        el.value = gameUrl;
-        el.setAttribute("readonly", "");
-        el.style.position = "absolute";
-        el.style.left = "-9999px";
-        document.body.appendChild(el);
-        el.select();
-        document.execCommand("copy");
-        document.body.removeChild(el);
-      }
-      setCopySuccess("Copied!");
-      setTimeout(() => setCopySuccess(null), COPY_FEEDBACK_MS);
-    } catch (err) {
-      console.error("copy failed", err);
-      setError("Failed to copy link. Try manually selecting the text.");
-    }
-  }, [gameUrl]);
-
-  const handleCopyFarcasterLink = useCallback(async () => {
-    if (!farcasterMiniappUrl) {
-      setError("No shareable Farcaster URL available.");
-      return;
-    }
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(farcasterMiniappUrl);
-      } else {
-        // fallback
-        const el = document.createElement("textarea");
-        el.value = farcasterMiniappUrl;
-        el.setAttribute("readonly", "");
-        el.style.position = "absolute";
-        el.style.left = "-9999px";
-        document.body.appendChild(el);
-        el.select();
-        document.execCommand("copy");
-        document.body.removeChild(el);
-      }
-      setCopySuccessFarcaster("Farcaster link copied!");
-      setTimeout(() => setCopySuccessFarcaster(null), COPY_FEEDBACK_MS);
-    } catch (err) {
-      console.error("copy farcaster failed", err);
-      setError("Failed to copy Farcaster link. Try manually selecting the text.");
-    }
-  }, [farcasterMiniappUrl]);
-
-  // Polling effect
-  useEffect(() => {
-    if (!gameCode) {
-      setError("No game code provided. Please enter a valid game code.");
-      setLoading(false);
-      return;
-    }
-
-    let abort = new AbortController();
-    let pollTimer: number | null = null;
-
-    const fetchOnce = async () => {
-      setError(null);
-      try {
-        const res = await apiClient.get<ApiResponse>(
-          `/games/code/${encodeURIComponent(gameCode)}`
-        );
-
-        if (!mountedRef.current) return;
-
-        if (!res?.data?.success || !res?.data?.data) {
-          throw new Error(`Game ${gameCode} not found`);
-        }
-
-        const gameData = res.data.data;
-
-        if (gameData.status === "RUNNING") {
-          router.push(`/game-play?gameCode=${encodeURIComponent(gameCode)}`);
-          return;
-        }
-
-        if (gameData.status !== "PENDING") {
-          throw new Error(`Game ${gameCode} is not open for joining.`);
-        }
-
-        setGame(gameData);
-        setAvailableSymbols(computeAvailableSymbols(gameData));
-        setIsJoined(checkPlayerJoined(gameData));
-
-        if (gameData.players.length === gameData.number_of_players) {
-          const updateRes = await apiClient.put<ApiResponse>(
-            `/games/${gameData.id}`,
-            { status: "RUNNING" }
-          );
-          if (updateRes?.data?.success)
-            router.push(`/game-play?gameCode=${gameCode}`);
-        }
-      } catch (err: any) {
-        if (!mountedRef.current) return;
-        if (err?.name === "AbortError") return;
-        console.error("fetchGame error:", err);
-        setError(err?.message ?? "Failed to fetch game data. Please try again.");
-      } finally {
-        if (mountedRef.current) setLoading(false);
-      }
-    };
-
-    const startPolling = async () => {
-      await fetchOnce();
-      const tick = async () => {
-        if (typeof document !== "undefined" && document.hidden) {
-          pollTimer = window.setTimeout(tick, POLL_INTERVAL);
-          return;
-        }
-        await fetchOnce();
-        pollTimer = window.setTimeout(tick, POLL_INTERVAL);
-      };
-      pollTimer = window.setTimeout(tick, POLL_INTERVAL);
-    };
-
-    startPolling();
-
-    return () => {
-      abort.abort();
-      if (pollTimer) clearTimeout(pollTimer);
-    };
-  }, [gameCode, computeAvailableSymbols, checkPlayerJoined, router]);
-
-  const playersJoined =
-    contractGame?.joinedPlayers ? Number(contractGame.joinedPlayers) : (game?.players.length ?? 0);
-  const maxPlayers =
-    contractGame?.numberOfPlayers ? Number(contractGame.numberOfPlayers) : (game?.number_of_players ?? 0);
-
-  const handleJoinGame = useCallback(async () => {
-    if (!game) {
-      setError("No game data found. Please enter a valid game code.");
-      return;
-    }
-
-    if (
-      !playerSymbol?.value ||
-      !availableSymbols.some((s) => s.value === playerSymbol.value)
-    ) {
-      setError("Please select a valid symbol.");
-      return;
-    }
-
-    if (game.players.length >= game.number_of_players) {
-      setError("Game is full!");
-      return;
-    }
-
-    if (!contractAddress) {
-      setError("Contract not deployed on this network.");
-      return;
-    }
-
-    if (!usdcTokenAddress && stakePerPlayer > 0) {
-      setError("USDC not available on this network.");
-      return;
-    }
-
-    setActionLoading(true);
-    setError(null);
-
-    const toastId = toast.loading("Joining the game...");
-
-    try {
-      // Only need approval if stake > 0
-      if (stakePerPlayer > 0) {
-        toast.update(toastId, { render: "Checking USDC approval..." });
-        await refetchAllowance();
-        const currentAllowance = usdcAllowance ? BigInt(usdcAllowance.toString()) : 0;
-
-        if (currentAllowance < stakePerPlayer) {
-          toast.update(toastId, { render: "Approving USDC spend..." });
-          await approveUSDC(usdcTokenAddress!, contractAddress, stakePerPlayer);
-          await new Promise(r => setTimeout(r, 3000));
-        }
-      }
-
-      toast.update(toastId, { render: "Joining game on-chain..." });
-      await joinGame();
-
-      toast.update(toastId, { render: "Saving join to server..." });
-      const res = await apiClient.post<ApiResponse>("/game-players/join", {
-        address,
-        symbol: playerSymbol.value,
-        code: game.code,
-      });
-
-      if (res?.data?.success === false) {
-        throw new Error(res?.data?.message ?? "Failed to join game");
-      }
-
-      if (mountedRef.current) {
-        setIsJoined(true);
-        setError(null);
-      }
-
-      toast.update(toastId, {
-        render: "Successfully joined the game!",
-        type: "success",
-        isLoading: false,
-        autoClose: 5000,
-      });
-    } catch (err: any) {
-      console.error("join error", err);
-      let message = "Failed to join game. Please try again.";
-      if (err.message?.includes("user rejected") || err.code === 4001) {
-        message = "Transaction cancelled.";
-      } else if (err.message?.includes("insufficient")) {
-        message = "Insufficient balance or gas.";
-      } else if (err.message) {
-        message = err.message;
-      }
-      setError(message);
-      toast.update(toastId, {
-        render: message,
-        type: "error",
-        isLoading: false,
-        autoClose: 8000,
-      });
-    } finally {
-      if (mountedRef.current) setActionLoading(false);
-    }
-  }, [game, playerSymbol, availableSymbols, address, joinGame, stakePerPlayer, contractAddress, usdcTokenAddress, refetchAllowance, usdcAllowance, approveUSDC]);
-
-  const handleLeaveGame = useCallback(async () => {
-    if (!game)
-      return setError("No game data found. Please enter a valid game code.");
-    setActionLoading(true);
-    setError(null);
-    try {
-      const res = await apiClient.post<ApiResponse>("/game-players/leave", {
-        address,
-        code: game.code,
-      });
-      if (res?.data?.success === false)
-        throw new Error(res?.data?.message ?? "Failed to leave game");
-      if (mountedRef.current) {
-        setIsJoined(false);
-        setPlayerSymbol(null);
-      }
-    } catch (err: any) {
-      console.error("leave error", err);
-      if (mountedRef.current)
-        setError(err?.message ?? "Failed to leave game. Please try again.");
-    } finally {
-      if (mountedRef.current) setActionLoading(false);
-    }
-  }, [game, address]);
-
-  const handleGoHome = useCallback(() => router.push("/"), [router]);
+    game,
+    playerSymbol,
+    setPlayerSymbol,
+    availableSymbols,
+    isJoined,
+    copySuccess,
+    copySuccessFarcaster,
+    error,
+    loading,
+    actionLoading,
+    contractGameLoading,
+    contractGameError,
+    stakePerPlayer,
+    approvePending,
+    approveConfirming,
+    isJoining,
+    joinError,
+    gameUrl,
+    farcasterMiniappUrl,
+    telegramShareUrl,
+    twitterShareUrl,
+    farcasterShareUrl,
+    showShare,
+    handleCopyLink,
+    handleCopyFarcasterLink,
+    playersJoined,
+    maxPlayers,
+    handleJoinGame,
+    handleLeaveGame,
+    handleGoHome,
+    isCreator,
+    guestCannotJoinStaked,
+  } = useWaitingRoom();
 
   // Loading / Error guards
   if (loading || contractGameLoading) {
-    return (
-      <div className="min-h-screen bg-settings bg-cover bg-fixed flex flex-col items-center justify-center px-6">
-        <div className="flex flex-col items-center space-y-3">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-3 border-[#00F0FF] border-opacity-50"></div>
-          <p className="text-[#00F0FF] text-lg font-semibold font-orbitron animate-pulse">
-            Entering the Lobby...
-          </p>
-        </div>
-      </div>
-    );
+    return <GameRoomLoading variant="waiting" />;
   }
 
   if (error || !game) {
@@ -466,20 +61,29 @@ export default function GameWaitingMobile(): JSX.Element {
           <p className="text-red-400 text-lg font-bold font-orbitron animate-pulse">
             {error ?? "Game Portal Closed"}
           </p>
-          <div className="flex gap-3 justify-center">
+          <div className="flex flex-wrap gap-3 justify-center">
             <button
               type="button"
               onClick={() => router.push("/join-room")}
               className="bg-[#00F0FF]/20 text-[#00F0FF] px-5 py-2 rounded-lg font-orbitron font-bold border border-[#00F0FF]/50 hover:bg-[#00F0FF]/30 transition-all shadow-md hover:shadow-[#00F0FF]/50"
             >
-              Retry Join
+              {error?.toLowerCase().includes("sign in as guest") ? "Go to Join Room" : "Retry Join"}
             </button>
+            {error?.toLowerCase().includes("sign in as guest") && (
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="bg-[#00F0FF]/20 text-[#00F0FF] px-5 py-2 rounded-lg font-orbitron font-bold border border-[#00F0FF]/50 hover:bg-[#00F0FF]/30 transition-all shadow-md hover:shadow-[#00F0FF]/50"
+              >
+                Sign in as guest (home)
+              </button>
+            )}
             <button
               type="button"
               onClick={handleGoHome}
               className="bg-[#00F0FF]/20 text-[#00F0FF] px-5 py-2 rounded-lg font-orbitron font-bold border border-[#00F0FF]/50 hover:bg-[#00F0FF]/30 transition-all shadow-md hover:shadow-[#00F0FF]/50"
             >
-              Return to Base
+              Return to Celo
             </button>
           </div>
         </div>
@@ -488,21 +92,13 @@ export default function GameWaitingMobile(): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen bg-settings bg-cover bg-fixed flex flex-col">
+    <div className="min-h-screen bg-settings bg-cover bg-fixed flex flex-col pt-[70px]">
       {/* Header */}
-      <div className="px-6 pt-8 pb-6">
-        <div className="max-w-md mx-auto flex justify-between items-center">
-          <button
-            onClick={() => router.push("/")}
-            className="flex items-center gap-3 text-cyan-400 hover:text-cyan-300 transition group"
-          >
-            <House className="w-7 h-7 group-hover:-translate-x-1 transition" />
-            <span className="font-bold text-lg">BACK</span>
-          </button>
-          <h1 className="text-4xl font-orbitron font-extrabold bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent">
-            WAITING ROOM
+      <div className="px-4 sm:px-6 pt-6 pb-4">
+        <div className="max-w-md mx-auto flex justify-center">
+          <h1 className="text-xl sm:text-2xl font-orbitron font-extrabold tracking-widest text-[#F0F7F7]">
+            Tycoon Lobby
           </h1>
-          <div className="w-20" />
         </div>
       </div>
 
@@ -510,12 +106,106 @@ export default function GameWaitingMobile(): JSX.Element {
       <div className="flex-1 overflow-y-auto px-6 pb-6">
         <div className="max-w-md mx-auto space-y-6">
           <div className="w-full bg-[#0A1A1B]/80 p-5 rounded-2xl shadow-2xl border border-[#00F0FF]/50 backdrop-blur-md">
-            <h2 className="text-2xl font-bold font-orbitron mb-6 text-[#F0F7F7] text-center tracking-widest bg-gradient-to-r from-[#00F0FF] to-[#FF00FF] bg-clip-text text-transparent animate-pulse">
+            <h2 className="text-2xl font-bold font-orbitron mb-2 text-[#F0F7F7] text-center tracking-widest bg-gradient-to-r from-[#00F0FF] to-[#FF00FF] bg-clip-text text-transparent">
               Tycoon Lobby
-              <span className="block text-base text-[#00F0FF] mt-1 font-extrabold shadow-text">
-                Code: {gameCode}
-              </span>
             </h2>
+
+            {!isCreator && (
+              <p className="text-center text-[#00F0FF] font-orbitron font-bold text-sm mb-4">Code: {gameCode}</p>
+            )}
+
+            {/* Game details */}
+            <div className="mb-6 p-4 rounded-xl bg-[#010F10]/70 border border-[#00F0FF]/30 space-y-3">
+              <h3 className="text-sm font-orbitron font-bold text-[#00F0FF] tracking-widest uppercase">Game details</h3>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                <span className="text-[#869298]">Mode</span>
+                <span className="text-[#F0F7F7] font-semibold">{game.mode ?? "PRIVATE"}</span>
+                <span className="text-[#869298]">Players</span>
+                <span className="text-[#F0F7F7] font-semibold">{game.number_of_players} max</span>
+                <span className="text-[#869298]">Starting cash</span>
+                <span className="text-[#F0F7F7] font-semibold">${(game.settings as any)?.starting_cash ?? 1500}</span>
+                {(game as any)?.duration != null && Number((game as any).duration) > 0 && (
+                  <>
+                    <span className="text-[#869298]">Duration</span>
+                    <span className="text-[#F0F7F7] font-semibold">{(game as any).duration} min</span>
+                  </>
+                )}
+              </div>
+              <div className="pt-2 border-t border-[#00F0FF]/20">
+                <p className="text-[#869298] text-xs font-orbitron mb-1.5">House rules</p>
+                <div className="flex flex-wrap gap-2">
+                  {(game.settings as any)?.auction && (
+                    <span className="px-2 py-0.5 rounded-md bg-[#00F0FF]/15 text-[#00F0FF] text-xs">Auction</span>
+                  )}
+                  {(game.settings as any)?.mortgage && (
+                    <span className="px-2 py-0.5 rounded-md bg-[#00F0FF]/15 text-[#00F0FF] text-xs">Mortgage</span>
+                  )}
+                  {(game.settings as any)?.even_build && (
+                    <span className="px-2 py-0.5 rounded-md bg-[#00F0FF]/15 text-[#00F0FF] text-xs">Even build</span>
+                  )}
+                  {(game.settings as any)?.randomize_play_order && (
+                    <span className="px-2 py-0.5 rounded-md bg-[#00F0FF]/15 text-[#00F0FF] text-xs">Random order</span>
+                  )}
+                  {(game.settings as any)?.rent_in_prison && (
+                    <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-400 text-xs">Rent in jail</span>
+                  )}
+                </div>
+              </div>
+              {(game as any)?.is_ai && (
+                <p className="text-cyan-400/90 text-xs font-semibold flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                  AI game
+                </p>
+              )}
+            </div>
+
+            {/* Non-creator: prioritise Pick token + Join */}
+            {!isCreator && game.players.length < game.number_of_players && !isJoined && (
+              <div className="mb-6 space-y-5">
+                <div className="flex flex-col bg-[#010F10]/50 p-5 rounded-xl border border-[#00F0FF]/30 shadow-lg">
+                  <label
+                    htmlFor="symbol-joiner-mobile"
+                    className="text-sm text-[#00F0FF] mb-1 font-orbitron font-bold"
+                  >
+                    Pick Your Token
+                  </label>
+                  <select
+                    id="symbol-joiner-mobile"
+                    value={playerSymbol?.value ?? ""}
+                    onChange={(e) =>
+                      setPlayerSymbol(getPlayerSymbolData(e.target.value) ?? null)
+                    }
+                    className="bg-[#0A1A1B] text-[#F0F7F7] p-2 rounded-lg border border-[#00F0FF]/50 focus:outline-none focus:ring-2 focus:ring-[#00F0FF] font-orbitron text-sm shadow-inner"
+                  >
+                    <option value="" disabled>
+                      Select Token
+                    </option>
+                    {availableSymbols.length > 0 ? (
+                      availableSymbols.map((symbol) => (
+                        <option key={symbol.value} value={symbol.value}>
+                          {symbol.emoji} {symbol.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option disabled>No Tokens Left</option>
+                    )}
+                  </select>
+                </div>
+                {guestCannotJoinStaked && (
+                  <p className="text-amber-400 text-sm text-center bg-amber-900/30 p-3 rounded-xl border border-amber-500/40">
+                    Guests cannot join staked games. Connect a wallet to join this game.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={handleJoinGame}
+                  className="w-full bg-gradient-to-r from-[#00F0FF] to-[#FF00FF] text-black text-sm font-orbitron font-extrabold py-3 rounded-xl hover:opacity-90 transition-all duration-300 shadow-lg hover:shadow-[#00F0FF]/50 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!playerSymbol || actionLoading || isJoining || approvePending || approveConfirming || guestCannotJoinStaked}
+                >
+                  {actionLoading || isJoining || approvePending || approveConfirming ? "Entering..." : "Join the Battle"}
+                </button>
+              </div>
+            )}
 
             <div className="text-center space-y-3 mb-6">
               <p className="text-[#869298] text-sm font-semibold">
@@ -565,15 +255,41 @@ export default function GameWaitingMobile(): JSX.Element {
               </div>
             </div>
 
-            {showShare && (
+            {showShare && isCreator && (
               <div className="mt-6 space-y-5 bg-[#010F10]/50 p-5 rounded-xl border border-[#00F0FF]/30 shadow-lg">
-                <h3 className="text-lg font-bold text-[#00F0FF] text-center mb-3">
+                <h3 className="text-lg font-bold text-[#00F0FF] text-center mb-4 tracking-widest">
                   Summon Allies!
                 </h3>
 
+                {/* QR + Code - gamy focal block */}
+                <div className="flex flex-col items-center gap-5 p-5 rounded-xl bg-[#010F10]/80 border border-[#00F0FF]/40 shadow-[inset_0_0_30px_rgba(0,240,255,0.05)]">
+                  <div className="flex flex-col items-center">
+                    <span className="text-[10px] font-orbitron font-bold text-[#00F0FF] tracking-[0.3em] mb-2 opacity-90">SCAN TO JOIN</span>
+                    <div className="p-3 rounded-xl bg-white border-2 border-[#00F0FF]/60 shadow-[0_0_20px_rgba(0,240,255,0.2)]">
+                      <QRCodeSVG
+                        value={gameUrl}
+                        size={180}
+                        level="M"
+                        bgColor="#ffffff"
+                        fgColor="#0E282A"
+                        marginSize={1}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] font-orbitron font-bold text-[#869298] tracking-[0.2em]">GAME CODE</span>
+                    <p className="font-orbitron font-black text-4xl text-[#00F0FF] tracking-widest tabular-nums" style={{ textShadow: "0 0 20px rgba(0,240,255,0.4)" }}>
+                      {gameCode}
+                    </p>
+                    <p className="text-[#869298] text-xs font-dmSans text-center max-w-[240px]">
+                      Share code or scan QR to join.
+                    </p>
+                  </div>
+                </div>
+
                 {/* Web Link */}
                 <div className="space-y-2">
-                  <p className="text-[#869298] text-xs text-center">Web Link</p>
+                  <p className="text-[#869298] text-xs text-center font-orbitron">Web Link</p>
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
@@ -586,7 +302,7 @@ export default function GameWaitingMobile(): JSX.Element {
                       type="button"
                       onClick={handleCopyLink}
                       disabled={actionLoading}
-                      className="flex items-center justify-center bg-gradient-to-r from-[#00F0FF] to-[#00FFAA] text-black p-2 rounded-lg hover:opacity-90 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                      className="flex items-center justify-center bg-gradient-to-r from-[#00F0FF] to-[#00FFAA] text-black p-2 rounded-lg hover:opacity-90 transition-all duration-300 shadow-md hover:shadow-[0_0_12px_rgba(0,240,255,0.4)] shrink-0"
                     >
                       <IoCopyOutline className="w-5 h-5" />
                     </button>
@@ -600,7 +316,7 @@ export default function GameWaitingMobile(): JSX.Element {
 
                 {/* Farcaster Miniapp Link */}
                 <div className="space-y-2">
-                  <p className="text-[#869298] text-xs text-center">Farcaster Miniapp Link</p>
+                  <p className="text-[#869298] text-xs text-center font-orbitron">Farcaster Miniapp</p>
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
@@ -613,7 +329,7 @@ export default function GameWaitingMobile(): JSX.Element {
                       type="button"
                       onClick={handleCopyFarcasterLink}
                       disabled={actionLoading}
-                      className="flex items-center justify-center bg-gradient-to-r from-[#A100FF] to-[#00F0FF] text-white p-2 rounded-lg hover:opacity-90 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105"
+                      className="flex items-center justify-center bg-gradient-to-r from-[#A100FF] to-[#00F0FF] text-white p-2 rounded-lg hover:opacity-90 transition-all duration-300 shadow-md hover:shadow-lg shrink-0"
                     >
                       <IoCopyOutline className="w-5 h-5" />
                     </button>
@@ -626,12 +342,12 @@ export default function GameWaitingMobile(): JSX.Element {
                 </div>
 
                 {/* Social share buttons */}
-                <div className="flex justify-center gap-5 pt-3">
+                <div className="flex justify-center gap-5 pt-2">
                   <a
                     href={telegramShareUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[#00F0FF]/50 transform hover:scale-110"
+                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[0_0_16px_rgba(0,240,255,0.3)] transform hover:scale-110"
                   >
                     <PiTelegramLogoLight className="w-6 h-6" />
                   </a>
@@ -639,7 +355,7 @@ export default function GameWaitingMobile(): JSX.Element {
                     href={twitterShareUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[#00F0FF]/50 transform hover:scale-110"
+                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[0_0_16px_rgba(0,240,255,0.3)] transform hover:scale-110"
                   >
                     <FaXTwitter className="w-6 h-6" />
                   </a>
@@ -647,7 +363,7 @@ export default function GameWaitingMobile(): JSX.Element {
                     href={farcasterShareUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[#00F0FF]/50 transform hover:scale-110"
+                    className="flex items-center justify-center bg-[#0A1A1B] text-[#0FF0FC] p-3 rounded-full border border-[#00F0FF]/50 hover:bg-[#00F0FF]/20 transition-all duration-300 shadow-md hover:shadow-[0_0_16px_rgba(0,240,255,0.3)] transform hover:scale-110"
                   >
                     <SiFarcaster className="w-6 h-6" />
                   </a>
@@ -655,7 +371,7 @@ export default function GameWaitingMobile(): JSX.Element {
               </div>
             )}
 
-            {game.players.length < game.number_of_players && !isJoined && (
+            {game.players.length < game.number_of_players && !isJoined && isCreator && (
               <div className="mt-6 space-y-5">
                 <div className="flex flex-col bg-[#010F10]/50 p-5 rounded-xl border border-[#00F0FF]/30 shadow-lg">
                   <label
@@ -691,7 +407,7 @@ export default function GameWaitingMobile(): JSX.Element {
                   type="button"
                   onClick={handleJoinGame}
                   className="w-full bg-gradient-to-r from-[#00F0FF] to-[#FF00FF] text-black text-sm font-orbitron font-extrabold py-3 rounded-xl hover:opacity-90 transition-all duration-300 shadow-lg hover:shadow-[#00F0FF]/50 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
-                  disabled={!playerSymbol || actionLoading || isJoining || approvePending || approveConfirming}
+                  disabled={!playerSymbol || actionLoading || isJoining || approvePending || approveConfirming || guestCannotJoinStaked}
                 >
                   {actionLoading || isJoining || approvePending || approveConfirming ? "Entering..." : "Join the Battle"}
                 </button>
@@ -727,9 +443,10 @@ export default function GameWaitingMobile(): JSX.Element {
               </button>
             </div>
 
-            {(error || joinError || contractGameError) && (
+            {(error || guestCannotJoinStaked || joinError || contractGameError) && (
               <p className="text-red-400 text-xs mt-3 text-center bg-red-900/50 p-2 rounded-lg animate-pulse">
                 {error ??
+                  (guestCannotJoinStaked ? "Guests cannot join staked games. Connect a wallet to join this game." : null) ??
                   joinError?.message ??
                   contractGameError?.message ??
                   "System Glitch Detected"}

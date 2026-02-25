@@ -13,6 +13,7 @@ import {
   usePreviousGameCode,
   useGetGameByCode,
 } from "@/context/ContractProvider";
+import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 import { toast } from "react-toastify";
 import { apiClient } from "@/lib/api";
 import { User as UserType } from "@/lib/types/users";
@@ -21,12 +22,16 @@ import { ApiResponse } from "@/types/api";
 const HeroSectionMobile: React.FC = () => {
   const router = useRouter();
   const { address, isConnecting } = useAccount();
+  const guestAuth = useGuestAuthOptional();
+  const guestUser = guestAuth?.guestUser ?? null;
 
   const [loading, setLoading] = useState(false);
   const [inputUsername, setInputUsername] = useState("");
-
   const [localRegistered, setLocalRegistered] = useState(false);
   const [localUsername, setLocalUsername] = useState("");
+  const [guestUsername, setGuestUsername] = useState("");
+  const [guestPassword, setGuestPassword] = useState("");
+  const [guestLoading, setGuestLoading] = useState(false);
 
   const { write: registerPlayer, isPending: registerPending } = useRegisterPlayer();
 
@@ -40,7 +45,53 @@ const HeroSectionMobile: React.FC = () => {
   const { data: gameCode } = usePreviousGameCode(address);
 
   const { data: contractGame } = useGetGameByCode(gameCode);
-  
+
+  const [backendGame, setBackendGame] = useState<{ status: string; is_ai?: boolean } | null>(null);
+  const [guestLastGame, setGuestLastGame] = useState<{ code: string; status: string; is_ai?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!gameCode || typeof gameCode !== "string") {
+      setBackendGame(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient
+      .get<ApiResponse>(`/games/code/${encodeURIComponent(gameCode.trim().toUpperCase())}`)
+      .then((res) => {
+        if (cancelled || !res?.data?.success || !res.data.data) return;
+        const data = res.data.data as { status: string; is_ai?: boolean };
+        setBackendGame(data);
+      })
+      .catch(() => {
+        if (!cancelled) setBackendGame(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [gameCode]);
+
+  // Guest: fetch "my games" so they can continue their last game (include is_ai for routing)
+  useEffect(() => {
+    if (!guestUser || address) {
+      setGuestLastGame(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient
+      .get<ApiResponse>("/games/my-games", { params: { limit: 10 } })
+      .then((res) => {
+        if (cancelled || !res?.data?.success || !Array.isArray(res.data.data)) return;
+        const games = res.data.data as { code: string; status: string; is_ai?: boolean }[];
+        const active = games.find((g) => g.status === "RUNNING");
+        setGuestLastGame(active ? { code: active.code, status: active.status, is_ai: active.is_ai } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setGuestLastGame(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [guestUser, address]);
 
   const [user, setUser] = useState<UserType | null>(null);
 
@@ -62,7 +113,7 @@ const HeroSectionMobile: React.FC = () => {
 
     const fetchUser = async () => {
       try {
-        const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Base`);
+        const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Celo`);
 
         if (!isActive) return;
 
@@ -87,25 +138,21 @@ const HeroSectionMobile: React.FC = () => {
   }, [address]);
 
   const registrationStatus = useMemo(() => {
-    if (!address) return "disconnected";
-
-    const hasBackend = !!user;
-    const hasOnChain = !!isUserRegistered || localRegistered;
-
-    if (hasBackend && hasOnChain) return "fully-registered";
-    if (hasBackend && !hasOnChain) return "backend-only";
-    return "none";
-  }, [address, user, isUserRegistered, localRegistered]);
+    if (address) {
+      const hasBackend = !!user;
+      const hasOnChain = !!isUserRegistered || localRegistered;
+      if (hasBackend && hasOnChain) return "fully-registered";
+      if (hasBackend && !hasOnChain) return "backend-only";
+      return "none";
+    }
+    if (guestUser) return "guest";
+    return "disconnected";
+  }, [address, user, isUserRegistered, localRegistered, guestUser]);
 
   const displayUsername = useMemo(() => {
-    return (
-      user?.username ||
-      localUsername ||
-      fetchedUsername ||
-      inputUsername ||
-      "Player"
-    );
-  }, [user, localUsername, fetchedUsername, inputUsername]);
+    if (guestUser) return guestUser.username;
+    return user?.username || localUsername || fetchedUsername || inputUsername || "Player";
+  }, [guestUser, user, localUsername, fetchedUsername, inputUsername]);
 
   const handleRegister = async () => {
     if (!address) {
@@ -136,7 +183,7 @@ const HeroSectionMobile: React.FC = () => {
         const res = await apiClient.post<ApiResponse>("/users", {
           username: finalUsername,
           address,
-          chain: "Base",
+          chain: "Celo",
         });
 
         if (!res?.success) throw new Error("Failed to save user on backend");
@@ -181,12 +228,24 @@ const HeroSectionMobile: React.FC = () => {
   };
 
 const handleContinuePrevious = () => {
+  if (guestUser && guestLastGame) {
+    if (guestLastGame.status === "PENDING") {
+      router.push(`/game-waiting?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    } else if (guestLastGame.is_ai) {
+      router.push(`/ai-play?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    } else {
+      router.push(`/game-play?gameCode=${encodeURIComponent(guestLastGame.code)}`);
+    }
+    return;
+  }
   if (!gameCode) return;
 
-  if (contractGame?.ai) {
-    router.push(`/ai-play?gameCode=${gameCode}`);
+  // Prefer backend is_ai (source of truth for our games); fall back to contract
+  const isAi = backendGame?.is_ai ?? contractGame?.ai;
+  if (isAi) {
+    router.push(`/ai-play?gameCode=${encodeURIComponent(gameCode)}`);
   } else {
-    router.push(`/game-play?gameCode=${gameCode}`);
+    router.push(`/game-play?gameCode=${encodeURIComponent(gameCode)}`);
   }
 };
 
@@ -199,47 +258,49 @@ const handleContinuePrevious = () => {
   }
 
   return (
-    <section className="relative w-full min-h-screen bg-[#010F10] overflow-x-hidden pb-12 z-0">
+    <section className="relative w-full min-h-screen min-h-[100dvh] bg-[#010F10] overflow-x-hidden z-0">
       {/* Background Image */}
       <div className="absolute inset-0">
         <Image
           src={herobg}
           alt="Hero Background"
           fill
-          className="object-cover hero-bg-zoom"
+          className="object-cover object-center hero-bg-zoom"
           priority
           quality={90}
+          sizes="100vw"
         />
+        {/* Gradient overlay for readability on mobile */}
+        <div className="absolute inset-0 bg-gradient-to-b from-[#010F10]/40 via-transparent to-[#010F10]/90" aria-hidden />
       </div>
 
-      {/* Content Container */}
-      <div className="w-full relative -z-0 flex flex-col items-center px-5 pt-16 pb-10 min-h-screen">
-        {/* Title */}
-        <h1 className="font-orbitron font-black text-6xl sm:text-7xl leading-none uppercase text-[#17ffff] tracking-[-0.02em] text-center mt-10">
-          TYCOON
-          <span className="absolute -top-1 -right-6 text-[#0FF0FC] font-dmSans font-bold text-3xl rotate-12 animate-pulse">
-            ?
-          </span>
-        </h1>
+      {/* Content Container - safe area for notches & home indicator */}
+      <div className="relative z-10 flex flex-col items-center px-4 sm:px-5 pt-[calc(env(safe-area-inset-top)+5rem)] pb-[max(env(safe-area-inset-bottom),1.5rem)] min-h-screen min-h-[100dvh]">
+        {/* Title - wrapped so "?" doesn't overflow on narrow screens */}
+        <div className="relative w-full flex justify-center mt-4 sm:mt-8">
+          <h1 className="font-orbitron font-black text-5xl sm:text-6xl md:text-7xl leading-none uppercase text-[#17ffff] tracking-[-0.02em] text-center drop-shadow-[0_0_20px_rgba(0,240,255,0.2)]">
+            TYCOON
+            <span className="inline-block ml-1 sm:ml-2 text-[#0FF0FC] font-dmSans font-bold text-2xl sm:text-3xl rotate-12 animate-pulse drop-shadow-lg align-top">?</span>
+          </h1>
+        </div>
 
         {/* Welcome / Loading message */}
-        <div className="mt-6 text-center">
-          {(registrationStatus === "fully-registered" || registrationStatus === "backend-only") &&
-            !loading && (
-              <p className="font-orbitron text-xl font-bold text-[#00F0FF]">
-                Welcome back, {displayUsername}!
-              </p>
-            )}
+        <div className="mt-5 sm:mt-6 text-center px-2">
+          {(registrationStatus === "fully-registered" || registrationStatus === "backend-only" || registrationStatus === "guest") && !loading && (
+            <p className="font-orbitron text-lg sm:text-xl font-bold text-[#00F0FF]">
+              Welcome back, {displayUsername}!
+            </p>
+          )}
 
           {loading && (
-            <p className="font-orbitron text-xl font-bold text-[#00F0FF]">
+            <p className="font-orbitron text-lg sm:text-xl font-bold text-[#00F0FF]">
               Registering... Please wait
             </p>
           )}
         </div>
 
         {/* Animated phrase */}
-        <div className="mt-5">
+        <div className="mt-4 sm:mt-5 px-2 min-h-[2.5rem] flex items-center justify-center">
           <TypeAnimation
             sequence={[
               "Conquer", 1200,
@@ -253,19 +314,18 @@ const handleContinuePrevious = () => {
             wrapper="span"
             speed={45}
             repeat={Infinity}
-            className="font-orbitron text-2xl sm:text-3xl font-bold text-[#F0F7F7] text-center block"
+            className="font-orbitron text-xl sm:text-2xl md:text-3xl font-bold text-[#F0F7F7] text-center block"
           />
         </div>
 
         {/* Short description */}
-        <p className="mt-6 text-center text-[#DDEEEE] text-base leading-relaxed max-w-[340px] font-dmSans">
+        <p className="mt-5 sm:mt-6 text-center text-[#DDEEEE] text-[15px] sm:text-base leading-relaxed max-w-[340px] font-dmSans px-1">
           Roll the dice • Buy properties • Collect rent •
           Play against AI • Become the top tycoon
         </p>
 
         {/* Main action area */}
-        <div className="mt-10 w-full max-w-[380px] flex flex-col items-center gap-6">
-          {/* Username input - only for new users */}
+        <div className="mt-8 sm:mt-10 w-full max-w-[380px] flex flex-col items-center gap-5 sm:gap-6 flex-1">
           {address && registrationStatus === "none" && !loading && (
             <input
               type="text"
@@ -276,7 +336,55 @@ const handleContinuePrevious = () => {
             />
           )}
 
-          {/* Register button */}
+          {/* Guest login/register */}
+          {!address && registrationStatus === "disconnected" && !loading && (
+            <div className="w-full flex flex-col gap-3 p-4 rounded-xl bg-[#0E1415]/90 border border-[#003B3E]">
+              <p className="text-[#00F0FF] font-orbitron text-sm font-bold text-center">Play without a wallet</p>
+              <input
+                type="text"
+                value={guestUsername}
+                onChange={(e) => setGuestUsername(e.target.value)}
+                placeholder="Username"
+                className="h-12 bg-[#010F10] rounded-xl border border-[#003B3E] px-4 text-[#17ffff] font-orbitron text-sm placeholder:text-[#455A64]"
+              />
+              <input
+                type="password"
+                value={guestPassword}
+                onChange={(e) => setGuestPassword(e.target.value)}
+                placeholder="Password"
+                className="h-12 bg-[#010F10] rounded-xl border border-[#003B3E] px-4 text-[#17ffff] font-orbitron text-sm placeholder:text-[#455A64]"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!guestUsername.trim() || !guestPassword) { toast.warn("Enter username and password"); return; }
+                    setGuestLoading(true);
+                    const r = await guestAuth?.registerGuest(guestUsername.trim(), guestPassword);
+                    setGuestLoading(false);
+                    if (r?.success) toast.success("Account created!"); else toast.error(r?.message ?? "Failed");
+                  }}
+                  disabled={guestLoading}
+                  className="flex-1 h-12 rounded-xl bg-[#003B3E] text-[#00F0FF] font-orbitron text-sm font-bold disabled:opacity-60"
+                >
+                  {guestLoading ? "..." : "Register"}
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!guestUsername.trim() || !guestPassword) { toast.warn("Enter username and password"); return; }
+                    setGuestLoading(true);
+                    const r = await guestAuth?.loginGuest(guestUsername.trim(), guestPassword);
+                    setGuestLoading(false);
+                    if (r?.success) toast.success("Welcome back!"); else toast.error(r?.message ?? "Failed");
+                  }}
+                  disabled={guestLoading}
+                  className="flex-1 h-12 rounded-xl bg-[#00F0FF] text-[#010F10] font-orbitron text-sm font-bold disabled:opacity-60"
+                >
+                  {guestLoading ? "..." : "Login"}
+                </button>
+              </div>
+            </div>
+          )}
+
           {address && registrationStatus !== "fully-registered" && !loading && (
             <button
               onClick={handleRegister}
@@ -302,14 +410,14 @@ const handleContinuePrevious = () => {
             </button>
           )}
 
-          {/* Registered user actions */}
-          {address && registrationStatus === "fully-registered" && (
-            <div className="w-full flex flex-col gap-5">
-              {/* Continue Previous Game - prominent when available */}
-              {gameCode && (contractGame?.status == 1) && (
+          {(address && registrationStatus === "fully-registered") || (registrationStatus === "guest" && guestUser) ? (
+            <div className="w-full flex flex-col items-center gap-5">
+              {/* Continue Previous Game - prominent when available, not full width */}
+              {((gameCode && (contractGame?.status == 1) && (!backendGame || (backendGame.status !== "FINISHED" && backendGame.status !== "COMPLETED" && backendGame.status !== "CANCELLED"))) ||
+                (guestUser && guestLastGame && guestLastGame.status !== "COMPLETED" && guestLastGame.status !== "CANCELLED")) && (
                 <button
                   onClick={handleContinuePrevious}
-                  className="relative w-full h-14 transition-transform active:scale-[0.98]"
+                  className="relative w-full max-w-[280px] h-12 transition-transform active:scale-[0.98]"
                 >
                   <svg
                     className="absolute inset-0 w-full h-full"
@@ -324,15 +432,15 @@ const handleContinuePrevious = () => {
                       strokeWidth="2.5"
                     />
                   </svg>
-                  <span className="absolute inset-0 flex items-center justify-center text-[#010F10] text-base font-orbitron font-bold gap-2">
-                    <Gamepad2 size={20} />
+                  <span className="absolute inset-0 flex items-center justify-center text-[#010F10] text-sm font-orbitron font-bold gap-2">
+                    <Gamepad2 size={18} />
                     Continue Game
                   </span>
                 </button>
               )}
 
               {/* Secondary buttons grid */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4 w-full max-w-[280px]">
                 <button
                   onClick={() => router.push("/game-settings")}
                   className="relative h-12 transition-transform active:scale-[0.97]"
@@ -378,10 +486,10 @@ const handleContinuePrevious = () => {
                 </button>
               </div>
 
-              {/* Challenge AI - always visible and prominent */}
+              {/* Challenge AI - prominent but not full width */}
               <button
                 onClick={() => router.push("/play-ai")}
-                className="relative w-full h-14 transition-transform active:scale-[0.98]"
+                className="relative w-full max-w-[280px] h-12 transition-transform active:scale-[0.98]"
               >
                 <svg
                   className="absolute inset-0 w-full h-full"
@@ -396,16 +504,21 @@ const handleContinuePrevious = () => {
                     strokeWidth="2.5"
                   />
                 </svg>
-                <span className="absolute inset-0 flex items-center justify-center text-[#010F10] text-lg font-orbitron font-bold uppercase">
+                <span className="absolute inset-0 flex items-center justify-center text-[#010F10] text-sm font-orbitron font-bold uppercase">
                   Challenge AI!
                 </span>
               </button>
+              {guestUser && (
+                <button onClick={() => guestAuth?.logoutGuest()} className="text-[#869298] hover:text-[#00F0FF] font-dmSans text-xs">
+                  Sign out (guest)
+                </button>
+              )}
             </div>
-          )}
+          ) : null}
 
-          {!address && !loading && (
-            <p className="text-gray-400 text-sm text-center mt-6">
-              Connect your wallet to start playing
+          {!address && !guestUser && !loading && (
+            <p className="text-gray-400 text-sm text-center mt-4">
+              Connect your wallet or play without a wallet above.
             </p>
           )}
         </div>
