@@ -239,8 +239,7 @@ const {
   onChainGameId ?? BigInt(0), // fallback only for hook stability; do not call write when 0
   endGameFinalPosition,
   BigInt(endGameCandidate.balance),
-  // Bug only showed when user won: pass false for both win and lose so claim succeeds (losing was already false).
-  false
+  endGameCandidate.winner ? (endGameCandidate.validWin !== false) : false
 );
   
 
@@ -302,6 +301,13 @@ const {
     setShowExitPrompt(false);
     const isHumanWinner = winner?.user_id === me?.user_id;
     try {
+      // Only call endAIGame when the on-chain game is actually an AI game (avoids "Not an AI game" when on wrong network)
+      if (!contractGame?.id || contractGame.id === BigInt(0) || !contractGame.ai) {
+        toast.error(
+          "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Base or Celo)."
+        );
+        return;
+      }
       // 1) Claim on-chain first (winners and losers both call exit AI game to get rewards)
       await endGame();
       // 2) Then sync backend (mark game FINISHED). Both can call; backend is idempotent if already finished.
@@ -321,7 +327,7 @@ const {
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset]);
+  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset, contractGame]);
 
   const handleClaimAndGoHome = useCallback(async () => {
     setClaimAndLeaveInProgress(true);
@@ -329,6 +335,13 @@ const {
     try {
       // Guest: backend already claimed on-chain when finish-by-time ran; skip wallet call.
       if (!isGuest) {
+        if (!contractGame?.id || contractGame.id === BigInt(0) || !contractGame.ai) {
+          toast.error(
+            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Base or Celo)."
+          );
+          setClaimAndLeaveInProgress(false);
+          return;
+        }
         await endGame();
       }
       try {
@@ -348,7 +361,7 @@ const {
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset]);
+  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset, contractGame]);
 
   // Sync players
   useEffect(() => {
