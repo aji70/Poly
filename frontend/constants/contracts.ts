@@ -22,4 +22,9 @@ export const AI_AGENT_REGISTRY_ADDRESSES: Record<number, Address | undefined> = 
   [polygon.id]: process.env.NEXT_PUBLIC_POLYGON_AI_REGISTRY as Address,
 };
 
+/** Tournament escrow (entry fees + prize pool). ABI: context/abi/TycoonTournamentEscrow.json */
+export const TOURNAMENT_ESCROW_ADDRESSES: Record<number, Address | undefined> = {
+  [polygon.id]: process.env.NEXT_PUBLIC_POLYGON_TOURNAMENT_ESCROW as Address | undefined,
+};
+
 export const MINIPAY_CHAIN_IDS = [137]; // Polygon Mainnet

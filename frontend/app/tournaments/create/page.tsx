@@ -21,7 +21,7 @@ export default function CreateTournamentPage() {
   const { createTournament } = useTournament();
 
   const [name, setName] = useState("");
-  const [chain, setChain] = useState(appChain ?? "POLYGON");
+  const chain = appChain ?? "POLYGON";
   const [prizeSource, setPrizeSource] = useState<PrizeSource>("NO_POOL");
   const [maxPlayers, setMaxPlayers] = useState(32);
   const [minPlayers, setMinPlayers] = useState(2);
@@ -44,7 +44,7 @@ export default function CreateTournamentPage() {
     try {
       const body: Parameters<typeof createTournament>[0] = {
         name: name.trim(),
-        chain: chain || appChain || "POLYGON",
+        chain,
         prize_source: prizeSource,
         max_players: Math.min(256, Math.max(2, maxPlayers)),
         min_players: Math.max(2, Math.min(maxPlayers, minPlayers)),
@@ -110,21 +110,7 @@ export default function CreateTournamentPage() {
             />
           </div>
 
-          <div>
-            <label htmlFor="chain" className="block text-sm font-medium text-white/80 mb-1">
-              Chain *
-            </label>
-            <select
-              id="chain"
-              value={chain}
-              onChange={(e) => setChain(e.target.value as "POLYGON" | "CELO" | "BASE")}
-              className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
-            >
-              <option value="POLYGON">POLYGON</option>
-              <option value="BASE">BASE</option>
-              <option value="CELO">CELO</option>
-            </select>
-          </div>
+          <p className="text-sm text-white/60">Chain: {chain}</p>
 
           <div>
             <label className="block text-sm font-medium text-white/80 mb-2">
