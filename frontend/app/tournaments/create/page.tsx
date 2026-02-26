@@ -17,7 +17,9 @@ const PRIZE_SOURCES: { value: PrizeSource; label: string }[] = [
 
 export default function CreateTournamentPage() {
   const router = useRouter();
-  const { guestUser } = useGuestAuthOptional() ?? {};
+  const guestAuth = useGuestAuthOptional();
+  const guestUser = guestAuth?.guestUser ?? null;
+  const authLoading = guestAuth?.isLoading ?? false;
   const { createTournament } = useTournament();
 
   const [name, setName] = useState("");
@@ -54,11 +56,13 @@ export default function CreateTournamentPage() {
         body.entry_fee_wei = Number(fee) || 0;
       }
       const created = await createTournament(body);
-      if (created) {
-        router.push(`/tournaments/${created.id}`);
+      const raw = created && typeof created === "object" ? (created as Record<string, unknown>) : null;
+      const id = raw?.id != null ? raw.id : (raw?.data as { id?: number } | undefined)?.id;
+      if (id != null) {
+        router.push(`/tournaments/${String(id)}`);
         return;
       }
-      setError("Failed to create tournament");
+      setError(created ? "Invalid response from server" : "Failed to create tournament");
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { message?: string } }; message?: string })?.response
@@ -88,9 +92,12 @@ export default function CreateTournamentPage() {
       </header>
 
       <main className="max-w-xl mx-auto px-4 py-8">
-        {!guestUser && (
+        {authLoading && (
+          <p className="text-cyan-400/80 text-center py-4">Checking sign-in…</p>
+        )}
+        {!authLoading && !guestUser && (
           <p className="text-amber-400 text-center py-4">
-            Sign in (guest or wallet) to create a tournament.
+            Sign in (guest or with wallet) to create a tournament.
           </p>
         )}
 
@@ -186,7 +193,7 @@ export default function CreateTournamentPage() {
 
           <button
             type="submit"
-            disabled={submitting || !guestUser}
+            disabled={submitting}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-cyan-500/25 border border-cyan-500/50 text-cyan-300 font-semibold hover:bg-cyan-500/35 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? (
