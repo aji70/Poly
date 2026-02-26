@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { apiClient } from "@/lib/api";
+import EscrowAdminSection from "@/components/admin/EscrowAdminSection";
 
 const CHAINS = ["POLYGON", "CELO", "BASE"] as const;
 type ChainKey = (typeof CHAINS)[number];
@@ -268,6 +269,8 @@ export default function ConfigTestPage() {
             </div>
           )}
         </div>
+
+        <EscrowAdminSection />
 
         <section className="rounded-xl border border-amber-500/30 bg-[#0A1A1B]/80 p-4 backdrop-blur-sm">
           <h2 className="mb-2 font-orbitron text-lg font-semibold text-amber-400/90">Contract read functions</h2>
