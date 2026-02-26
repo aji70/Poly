@@ -3,11 +3,19 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useAccount, useChainId, useSignMessage } from "wagmi";
 import { useTournament } from "@/context/TournamentContext";
 import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 import { appChain } from "@/config";
 import type { PrizeSource } from "@/types/tournament";
 import { ChevronLeft, Loader2, Swords } from "lucide-react";
+
+function chainIdToBackendChain(chainId: number): string {
+  if (chainId === 137 || chainId === 80001) return "POLYGON";
+  if (chainId === 42220 || chainId === 44787) return "CELO";
+  if (chainId === 8453 || chainId === 84531) return "BASE";
+  return "POLYGON";
+}
 
 const PRIZE_SOURCES: { value: PrizeSource; label: string }[] = [
   { value: "NO_POOL", label: "No prize pool" },
@@ -17,10 +25,16 @@ const PRIZE_SOURCES: { value: PrizeSource; label: string }[] = [
 
 export default function CreateTournamentPage() {
   const router = useRouter();
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const { signMessageAsync } = useSignMessage();
   const guestAuth = useGuestAuthOptional();
   const guestUser = guestAuth?.guestUser ?? null;
   const authLoading = guestAuth?.isLoading ?? false;
+  const loginByWallet = guestAuth?.loginByWallet;
   const { createTournament } = useTournament();
+
+  const canCreate = !!guestUser || (isConnected && !!address);
 
   const [name, setName] = useState("");
   const chain = appChain ?? "POLYGON";
@@ -37,13 +51,28 @@ export default function CreateTournamentPage() {
       setError("Name is required");
       return;
     }
-    if (!guestUser) {
-      setError("You must be logged in to create a tournament");
+    if (!canCreate) {
+      setError("Connect your wallet or sign in (guest) to create a tournament");
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
+      if (!guestUser && isConnected && address && loginByWallet) {
+        const message = `Sign in to Tycoon at ${Date.now()}`;
+        const signature = await signMessageAsync({ message });
+        const walletChain = chainIdToBackendChain(chainId);
+        const res = await loginByWallet({
+          address,
+          chain: walletChain,
+          message,
+          signature,
+        });
+        if (!res.success) {
+          setError(res.message ?? "Sign in with wallet failed. You may need to register first.");
+          return;
+        }
+      }
       const body: Parameters<typeof createTournament>[0] = {
         name: name.trim(),
         chain,
@@ -94,9 +123,14 @@ export default function CreateTournamentPage() {
         {authLoading && (
           <p className="text-cyan-400/80 text-center py-4">Checking sign-in…</p>
         )}
-        {!authLoading && !guestUser && (
+        {!authLoading && !canCreate && (
           <p className="text-amber-400 text-center py-4">
-            Sign in (guest or with wallet) to create a tournament.
+            Connect your wallet or sign in as guest to create a tournament.
+          </p>
+        )}
+        {!authLoading && canCreate && !guestUser && isConnected && (
+          <p className="text-cyan-400/80 text-center py-3 text-sm">
+            Wallet connected. Click &quot;Create tournament&quot; to sign in with your wallet and create.
           </p>
         )}
 
@@ -192,7 +226,7 @@ export default function CreateTournamentPage() {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || !canCreate}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-cyan-500/25 border border-cyan-500/50 text-cyan-300 font-semibold hover:bg-cyan-500/35 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? (
