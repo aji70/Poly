@@ -477,7 +477,7 @@ export default function Profile() {
                 {[
                   { label: 'TYC', value: tycBalance.isLoading ? '...' : Number(tycBalance.data?.formatted || 0).toFixed(2), color: 'cyan' },
                   { label: 'USDC', value: usdcBalance.isLoading ? '...' : Number(usdcBalance.data?.formatted || 0).toFixed(2), color: 'emerald' },
-                  { label: 'Celo', value: ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0', color: 'slate' },
+                  { label: chainId === 137 || chainId === 80001 ? 'Polygon' : chainId === 42220 || chainId === 44787 ? 'Celo' : chainId === 8453 || chainId === 84531 ? 'Base' : 'Native', value: ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0', color: 'slate' },
                 ].map(({ label, value, color }) => (
                   <div key={label} className={`flex-1 sm:flex-none text-center py-3 px-4 rounded-2xl min-w-0 balance-pill balance-${color}`}>
                     <p className="text-[10px] sm:text-xs font-medium uppercase tracking-wider text-white/50">{label}</p>

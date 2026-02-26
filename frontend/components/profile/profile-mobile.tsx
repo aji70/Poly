@@ -458,7 +458,7 @@ export default function ProfilePageMobile() {
           {[
             { label: 'TYC', value: tycBalance.isLoading ? '...' : Number(tycBalance.data?.formatted || 0).toFixed(2) },
             { label: 'USDC', value: usdcBalance.isLoading ? '...' : Number(usdcBalance.data?.formatted || 0).toFixed(2) },
-            { label: 'Celo', value: ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0' },
+            { label: chainId === 137 || chainId === 80001 ? 'Polygon' : chainId === 42220 || chainId === 44787 ? 'Celo' : chainId === 8453 || chainId === 84531 ? 'Base' : 'Native', value: ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0' },
           ].map(({ label, value }) => (
             <div key={label} className="profile-card rounded-xl p-3 text-center border border-white/10">
               <p className="text-[10px] font-medium text-white/50 uppercase tracking-wider">{label}</p>
