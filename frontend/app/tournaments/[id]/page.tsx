@@ -430,9 +430,10 @@ export default function TournamentDetailPage() {
                               )}
                               {m.game_id && (
                                 <Link
-                                  href={`/game-waiting?gameId=${m.game_id}`}
-                                  className="text-cyan-400 hover:underline text-xs"
+                                  href={`/game-waiting?gameCode=T${id}-R${r.round_index}-M${m.match_index}`}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-xs font-medium hover:bg-cyan-500/30"
                                 >
+                                  <Play className="w-3.5 h-3.5" />
                                   Play
                                 </Link>
                               )}
