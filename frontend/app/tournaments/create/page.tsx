@@ -56,10 +56,9 @@ export default function CreateTournamentPage() {
         body.entry_fee_wei = Number(fee) || 0;
       }
       const created = await createTournament(body);
-      const raw = created && typeof created === "object" ? (created as Record<string, unknown>) : null;
-      const id = raw?.id != null ? raw.id : (raw?.data as { id?: number } | undefined)?.id;
+      const id = created?.id;
       if (id != null) {
-        router.push(`/tournaments/${String(id)}`);
+        router.push(`/tournaments/${id}`);
         return;
       }
       setError(created ? "Invalid response from server" : "Failed to create tournament");
