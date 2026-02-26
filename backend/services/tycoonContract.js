@@ -15,7 +15,8 @@ import logger from "../config/logger.js";
 /** Serialize backend wallet transactions to avoid nonce collisions under concurrent load. */
 let txQueue = Promise.resolve();
 
-function withTxQueue(fn) {
+/** Exported so tournamentEscrow can share the same queue when using the same backend wallet. */
+export function withTxQueue(fn) {
   const prev = txQueue;
   let resolveNext;
   txQueue = new Promise((r) => {

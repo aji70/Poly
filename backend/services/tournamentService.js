@@ -13,6 +13,7 @@ import GamePlayer from "../models/GamePlayer.js";
 import GameSetting from "../models/GameSetting.js";
 import Chat from "../models/Chat.js";
 import { createGameByBackend, joinGameByBackend, isContractConfigured } from "../services/tycoonContract.js";
+import { createTournamentOnChain, isEscrowConfigured } from "../services/tournamentEscrow.js";
 import logger from "../config/logger.js";
 
 const TOURNAMENT_SYMBOLS = ["hat", "car", "dog", "thimble", "wheelbarrow", "battleship", "boot", "iron"];
@@ -40,6 +41,7 @@ export async function createTournament(data) {
   const max = Math.min(256, Math.max(2, Number(max_players) || 32));
   const min = Math.max(2, Math.min(max, Number(min_players) || 2));
 
+  const normalizedChain = User.normalizeChain(chain);
   const payload = {
     creator_id,
     name: String(name).trim(),
@@ -51,10 +53,28 @@ export async function createTournament(data) {
     prize_pool_wei: prize_source === "CREATOR_FUNDED" ? (prize_pool_wei != null ? String(prize_pool_wei) : null) : null,
     prize_distribution: prize_source === "NO_POOL" ? null : prize_distribution || null,
     registration_deadline: registration_deadline || null,
-    chain: User.normalizeChain(chain),
+    chain: normalizedChain,
   };
 
-  return Tournament.create(payload);
+  const tournament = await Tournament.create(payload);
+  if (isEscrowConfigured(normalizedChain)) {
+    try {
+      const creator = await User.findById(creator_id);
+      const creatorAddress =
+        (creator?.address && String(creator.address).trim()) ||
+        (creator?.linked_wallet_address && String(creator.linked_wallet_address).trim()) ||
+        "0x0000000000000000000000000000000000000000";
+      await createTournamentOnChain(
+        tournament.id,
+        tournament.entry_fee_wei ?? 0,
+        creatorAddress,
+        normalizedChain
+      );
+    } catch (err) {
+      logger.error({ err: err?.message, tournamentId: tournament.id, chain: normalizedChain }, "Escrow createTournament failed; tournament saved in DB only");
+    }
+  }
+  return tournament;
 }
 
 /**
