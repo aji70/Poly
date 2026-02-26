@@ -71,6 +71,7 @@ export default function TournamentDetailPage() {
   } = useTournament();
 
   const [startNowMatchId, setStartNowMatchId] = useState<number | null>(null);
+  const [creatingRoundIndex, setCreatingRoundIndex] = useState<number | null>(null);
   const [firstRoundStartAt, setFirstRoundStartAt] = useState<string>("");
   const START_WINDOW_MINUTES = 5;
 
@@ -228,13 +229,18 @@ export default function TournamentDetailPage() {
     if (!id || !isCreator) return;
     setActionError(null);
     setActionSuccess(null);
-    const res = await startRound(id, roundIndex);
-    if (res.success) {
-      setActionSuccess(`Round ${roundIndex + 1} started.`);
-      fetchTournament(id);
-      fetchBracket(id);
-    } else {
-      setActionError(res.message ?? "Failed");
+    setCreatingRoundIndex(roundIndex);
+    try {
+      const res = await startRound(id, roundIndex);
+      if (res.success) {
+        setActionSuccess(`Round ${roundIndex + 1} started.`);
+        fetchTournament(id);
+        fetchBracket(id);
+      } else {
+        setActionError(res.message ?? "Failed");
+      }
+    } finally {
+      setCreatingRoundIndex(null);
     }
   };
 
@@ -412,6 +418,13 @@ export default function TournamentDetailPage() {
                             m.status !== "BYE" &&
                             isInMatch(m);
                           const hasPlayAction = !!m.game_id;
+                          const needsGameCreated =
+                            !m.game_id &&
+                            m.status !== "BYE" &&
+                            m.slot_a_entry_id &&
+                            m.slot_b_entry_id &&
+                            !m.winner_entry_id;
+                          const canCreateGame = needsGameCreated && isCreator;
                           return (
                             <div
                               key={m.id}
@@ -431,7 +444,7 @@ export default function TournamentDetailPage() {
                                   </span>
                                 )}
                               </div>
-                              {(hasPlayAction || showStartNow) && (
+                              {(hasPlayAction || showStartNow || canCreateGame) && (
                                 <div className="flex justify-end">
                                   {m.game_id ? (
                                     <Link
@@ -441,7 +454,7 @@ export default function TournamentDetailPage() {
                                       <Play className="w-4 h-4" />
                                       Go to board
                                     </Link>
-                                  ) : (
+                                  ) : showStartNow ? (
                                     <button
                                       type="button"
                                       onClick={() => handleStartNow(m.id)}
@@ -460,7 +473,30 @@ export default function TournamentDetailPage() {
                                         </>
                                       )}
                                     </button>
-                                  )}
+                                  ) : canCreateGame ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartRound(r.round_index)}
+                                      disabled={creatingRoundIndex != null}
+                                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 disabled:opacity-50 transition-colors"
+                                    >
+                                      {creatingRoundIndex === r.round_index ? (
+                                        <>
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                          Creating...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Play className="w-4 h-4" />
+                                          Create game
+                                        </>
+                                      )}
+                                    </button>
+                                  ) : needsGameCreated ? (
+                                    <span className="text-xs text-white/50">
+                                      Waiting for creator to start match
+                                    </span>
+                                  ) : null}
                                 </div>
                               )}
                             </div>

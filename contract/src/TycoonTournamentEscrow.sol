@@ -121,6 +121,25 @@ contract TycoonTournamentEscrow is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Register a player for a free tournament. Backend calls on behalf of guests (no wallet).
+     * Only backend or owner. Only works for tournaments with entryFee == 0.
+     */
+    function registerForTournamentFor(uint256 tournamentId, address player) external onlyBackendOrOwner nonReentrant {
+        if (player == address(0)) revert InvalidTournament();
+        Tournament storage t = tournaments[tournamentId];
+        if (t.status != TournamentStatus.Open) revert InvalidStatus();
+        if (t.entryFee != 0) revert InvalidAmount();
+        if (entryPaid[tournamentId][player] > 0) revert AlreadyRegistered();
+        t.totalEntryFees += 0;
+        entryPaid[tournamentId][player] = 0;
+        if (!_entrantIndexed[tournamentId][player]) {
+            _entrantIndexed[tournamentId][player] = true;
+            _entrants[tournamentId].push(player);
+        }
+        emit Registered(tournamentId, player, 0);
+    }
+
+    /**
      * @notice Lock tournament (no more deposits). Only backend or owner.
      */
     function lockTournament(uint256 tournamentId) external onlyBackendOrOwner {
