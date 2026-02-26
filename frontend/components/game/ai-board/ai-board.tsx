@@ -23,6 +23,9 @@ import BoardSquare from "./board-square";
 import CenterArea from "./center-area";
 import { ApiResponse } from "@/types/api";
 import { useEndAIGameAndClaim, useGetGameByCode } from "@/context/ContractProvider";
+import { useChainId } from "wagmi";
+import { useAppKit } from "@reown/appkit/react";
+import { showWrongNetworkClaimToast } from "@/lib/utils/wrongNetworkClaimToast";
 import { BankruptcyModal } from "../modals/bankruptcy";
 import { CardModal } from "../modals/cards";
 import { PropertyActionModal } from "../modals/property-action";
@@ -218,6 +221,9 @@ const AiBoard = ({
   }, [landedPositionThisTurn.current, properties]);
 
 const { data: contractGame } = useGetGameByCode(game.code);
+  const chainId = useChainId();
+  const { open: openAppKit } = useAppKit();
+  const POLYGON_CHAIN_ID = 137;
 
 // On-chain game ID: prefer contract read, fallback to backend's contract_game_id (so we don't send 0)
 const onChainGameId =
@@ -303,9 +309,13 @@ const {
     try {
       // Only call endAIGame when the on-chain game is actually an AI game (avoids "Not an AI game" when on wrong network)
       if (!contractGame?.id || contractGame.id === BigInt(0) || !contractGame.ai) {
-        toast.error(
-          "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Base or Celo)."
-        );
+        if (chainId !== POLYGON_CHAIN_ID) {
+          showWrongNetworkClaimToast(() => openAppKit({ view: "Networks" }));
+        } else {
+          toast.error(
+            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Polygon)."
+          );
+        }
         return;
       }
       // 1) Claim on-chain first (winners and losers both call exit AI game to get rewards)
@@ -327,7 +337,7 @@ const {
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset, contractGame]);
+  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
 
   const handleClaimAndGoHome = useCallback(async () => {
     setClaimAndLeaveInProgress(true);
@@ -336,9 +346,13 @@ const {
       // Guest: backend already claimed on-chain when finish-by-time ran; skip wallet call.
       if (!isGuest) {
         if (!contractGame?.id || contractGame.id === BigInt(0) || !contractGame.ai) {
-          toast.error(
-            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Base or Celo)."
-          );
+          if (chainId !== POLYGON_CHAIN_ID) {
+            showWrongNetworkClaimToast(() => openAppKit({ view: "Networks" }));
+          } else {
+            toast.error(
+              "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Polygon)."
+            );
+          }
           setClaimAndLeaveInProgress(false);
           return;
         }
@@ -361,7 +375,7 @@ const {
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset, contractGame]);
+  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
 
   // Sync players
   useEffect(() => {
