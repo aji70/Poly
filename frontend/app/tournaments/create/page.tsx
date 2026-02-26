@@ -51,8 +51,10 @@ export default function CreateTournamentPage() {
   const [guestLoading, setGuestLoading] = useState(false);
 
   const isSignedIn = !!guestUser;
-  const showAuthGate = !authLoading && !isSignedIn;
-  const canUseWallet = isConnected && !!address && !!loginByWallet;
+  const hasWallet = isConnected && !!address;
+  const canCreate = isSignedIn || hasWallet;
+  const showAuthGate = !authLoading && !canCreate;
+  const canUseWallet = hasWallet && !!loginByWallet;
 
   const handleSignInWithWallet = async () => {
     if (!address || !loginByWallet) return;
@@ -97,20 +99,24 @@ export default function CreateTournamentPage() {
       setError("Name is required");
       return;
     }
-    if (!isSignedIn) {
-      setError("Sign in first to create a tournament");
+    if (!canCreate) {
+      setError("Connect your wallet or sign in to create a tournament");
       return;
     }
     setError(null);
     setStep("creating");
     try {
-      const body: Parameters<typeof createTournament>[0] = {
+      const body: Parameters<typeof createTournament>[0] & { address?: string; wallet_chain?: string } = {
         name: name.trim(),
         chain,
         prize_source: prizeSource,
         max_players: Math.min(256, Math.max(2, maxPlayers)),
         min_players: Math.max(2, Math.min(maxPlayers, minPlayers)),
       };
+      if (!isSignedIn && address) {
+        body.address = address;
+        body.wallet_chain = chainIdToBackendChain(chainId);
+      }
       if (prizeSource === "ENTRY_FEE_POOL") {
         const usd = parseFloat(entryFeeUsd);
         body.entry_fee_wei = !Number.isNaN(usd) && usd >= 0 ? Math.round(usd * 10 ** USDC_DECIMALS) : 0;
@@ -226,11 +232,11 @@ export default function CreateTournamentPage() {
           </div>
         )}
 
-        {!authLoading && isSignedIn && (
+        {!authLoading && canCreate && (
           <form onSubmit={handleSubmit} className="space-y-6">
             <p className="text-sm text-emerald-400/90 flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4" />
-              Signed in as {guestUser?.username ?? "user"}
+              {isSignedIn ? `Signed in as ${guestUser?.username ?? "user"}` : "Connected with wallet"}
             </p>
 
             <div>

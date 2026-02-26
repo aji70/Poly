@@ -122,7 +122,13 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       try {
         const res = await apiClient.get<Tournament[]>(TOURNAMENTS_BASE, params);
         const data = res?.data;
-        setTournaments(Array.isArray(data) ? data : []);
+        // Handle direct array or wrapped { data: [] } from different API formats
+        const list: Tournament[] = Array.isArray(data)
+          ? data
+          : (data != null && typeof data === "object" && "data" in data)
+              ? (Array.isArray((data as { data?: unknown }).data) ? ((data as { data: Tournament[] }).data) : [])
+              : [];
+        setTournaments(list);
       } catch (err: unknown) {
         const message =
           (err as { response?: { data?: { message?: string } }; message?: string })?.response

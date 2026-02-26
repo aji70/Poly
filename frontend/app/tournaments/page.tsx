@@ -36,7 +36,7 @@ function statusLabel(status: string): string {
 function TournamentCard({ t }: { t: TournamentType }) {
   return (
     <Link
-      href={`/tournaments/${t.code ?? t.id}`}
+      href={`/tournaments/${t.code != null && t.code !== "" ? t.code : t.id}`}
       className="block rounded-2xl border border-[#0E282A] bg-[#011112]/80 hover:bg-[#0E282A]/60 hover:border-[#003B3E] transition-all p-5"
     >
       <div className="flex items-start justify-between gap-4">
