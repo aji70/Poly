@@ -411,48 +411,57 @@ export default function TournamentDetailPage() {
                             !m.game_id &&
                             m.status !== "BYE" &&
                             isInMatch(m);
+                          const hasPlayAction = !!m.game_id;
                           return (
                             <div
                               key={m.id}
-                              className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 rounded-lg bg-black/20 text-sm"
+                              className="py-2 px-3 rounded-lg bg-black/20 text-sm space-y-2"
                             >
-                              <span className="truncate">
-                                {m.slot_a_username ?? (m.slot_a_type === "BYE" ? "BYE" : "—")}
-                              </span>
-                              <span className="text-white/50">vs</span>
-                              <span className="truncate">
-                                {m.slot_b_username ?? (m.slot_b_type === "BYE" ? "BYE" : "—")}
-                              </span>
-                              {m.winner_username && (
-                                <span className="text-cyan-400 text-xs">
-                                  Winner: {m.winner_username}
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="truncate">
+                                  {m.slot_a_username ?? (m.slot_a_type === "BYE" ? "BYE" : "—")}
                                 </span>
-                              )}
-                              {m.game_id && (
-                                <Link
-                                  href={`/game-waiting?gameCode=T${id}-R${r.round_index}-M${m.match_index}`}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-xs font-medium hover:bg-cyan-500/30"
-                                >
-                                  <Play className="w-3.5 h-3.5" />
-                                  Play
-                                </Link>
-                              )}
-                              {showStartNow && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleStartNow(m.id)}
-                                  disabled={startNowMatchId != null}
-                                  className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-xs font-medium hover:bg-cyan-500/30 disabled:opacity-50"
-                                >
-                                  {startNowMatchId === m.id ? (
-                                    <>
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                      Starting...
-                                    </>
+                                <span className="text-white/50">vs</span>
+                                <span className="truncate">
+                                  {m.slot_b_username ?? (m.slot_b_type === "BYE" ? "BYE" : "—")}
+                                </span>
+                                {m.winner_username && (
+                                  <span className="text-cyan-400 text-xs">
+                                    Winner: {m.winner_username}
+                                  </span>
+                                )}
+                              </div>
+                              {(hasPlayAction || showStartNow) && (
+                                <div className="flex justify-end">
+                                  {m.game_id ? (
+                                    <Link
+                                      href={`/game-waiting?gameCode=T${id}-R${r.round_index}-M${m.match_index}`}
+                                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 transition-colors"
+                                    >
+                                      <Play className="w-4 h-4" />
+                                      Go to board
+                                    </Link>
                                   ) : (
-                                    "Start now"
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartNow(m.id)}
+                                      disabled={startNowMatchId != null}
+                                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 disabled:opacity-50 transition-colors"
+                                    >
+                                      {startNowMatchId === m.id ? (
+                                        <>
+                                          <Loader2 className="w-4 h-4 animate-spin" />
+                                          Starting...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Play className="w-4 h-4" />
+                                          Start now
+                                        </>
+                                      )}
+                                    </button>
                                   )}
-                                </button>
+                                </div>
                               )}
                             </div>
                           );
