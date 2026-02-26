@@ -23,6 +23,7 @@ export type SlotType = "ENTRY" | "MATCH_WINNER" | "BYE";
 
 export interface Tournament {
   id: number;
+  code?: string;
   creator_id: number;
   name: string;
   status: TournamentStatus;

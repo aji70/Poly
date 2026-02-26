@@ -116,10 +116,10 @@ export default function CreateTournamentPage() {
         body.entry_fee_wei = !Number.isNaN(usd) && usd >= 0 ? Math.round(usd * 10 ** USDC_DECIMALS) : 0;
       }
       const created = await createTournament(body);
-      const id = created?.id;
-      if (id != null) {
+      const slug = (created as { code?: string; id?: number })?.code ?? (created as { id?: number })?.id;
+      if (slug != null) {
         setStep("success");
-        setTimeout(() => router.push(`/tournaments/${id}`), 1200);
+        setTimeout(() => router.push(`/tournaments/${slug}`), 1200);
         return;
       }
       setError("Failed to create tournament");
