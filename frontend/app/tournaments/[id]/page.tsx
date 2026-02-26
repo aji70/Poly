@@ -263,7 +263,12 @@ export default function TournamentDetailPage() {
     );
   }
 
-  if (!tournament || String(tournament.id) !== id) {
+  // id from URL can be code (e.g. X6TEUPOE) or numeric id; tournament resolved by API
+  const slugMatches =
+    tournament &&
+    (String(tournament.id) === id ||
+      (String(tournament.code ?? "").toUpperCase() === String(id).trim().toUpperCase()));
+  if (!tournament || !slugMatches) {
     return null;
   }
 
