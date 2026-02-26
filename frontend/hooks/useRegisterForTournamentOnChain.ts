@@ -45,7 +45,11 @@ export function useRegisterForTournamentOnChain() {
         throw new Error("Wallet not connected or escrow not configured for this network");
       }
 
-      const fee = BigInt(entryFeeWei ?? 0);
+      const tid = Number(tournamentId);
+      const validTournamentId = Number.isFinite(tid) && tid >= 0 ? Math.floor(tid) : 0;
+
+      const feeNum = Number(entryFeeWei);
+      const fee = BigInt(Number.isFinite(feeNum) && feeNum >= 0 ? Math.floor(feeNum) : 0);
 
       if (fee > 0) {
         if (!usdcAddress) {
@@ -62,7 +66,7 @@ export function useRegisterForTournamentOnChain() {
         address: escrowAddress,
         abi: TycoonTournamentEscrowAbi as never,
         functionName: "registerForTournament",
-        args: [BigInt(tournamentId)],
+        args: [BigInt(validTournamentId)],
       });
 
       return hash ?? null;

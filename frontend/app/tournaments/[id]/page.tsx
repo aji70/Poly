@@ -72,7 +72,6 @@ export default function TournamentDetailPage() {
 
   const [startNowMatchId, setStartNowMatchId] = useState<number | null>(null);
   const [creatingRoundIndex, setCreatingRoundIndex] = useState<number | null>(null);
-  const [firstRoundStartAt, setFirstRoundStartAt] = useState<string>("");
   const START_WINDOW_MINUTES = 5;
 
   const isInMatch = useCallback(
@@ -165,7 +164,7 @@ export default function TournamentDetailPage() {
   const handleRegister = async () => {
     if (!id || !canRegister || !tournament) return;
 
-    const entryFeeWei = Number(tournament.entry_fee_wei ?? 0);
+    const entryFeeWei = Math.max(0, Math.floor(Number(tournament.entry_fee_wei) || 0));
     const isPaid = tournament.prize_source === "ENTRY_FEE_POOL" && entryFeeWei > 0;
 
     // Paid tournaments require wallet for on-chain payment
@@ -180,9 +179,9 @@ export default function TournamentDetailPage() {
     try {
       let registrationTxHash: string | null = null;
 
-      // On-chain registration: wallet users (free and paid), or paid-only for guests
+      // On-chain registration: wallet users (free and paid). Use tournament.id (numeric) for contract.
       if (walletAddress) {
-        const hash = await registerOnChain(Number(id), entryFeeWei);
+        const hash = await registerOnChain(tournament.id, entryFeeWei);
         if (!hash) {
           setActionError("On-chain registration failed");
           return;
@@ -213,11 +212,9 @@ export default function TournamentDetailPage() {
     if (!id || !isCreator) return;
     setActionError(null);
     setActionSuccess(null);
-    const body = firstRoundStartAt.trim() ? { first_round_start_at: firstRoundStartAt.trim() } : undefined;
-    const res = await closeRegistration(id, body);
+    const res = await closeRegistration(id, undefined);
     if (res.success) {
       setActionSuccess("Registration closed. Bracket generated.");
-      setFirstRoundStartAt("");
       fetchTournament(id);
       fetchBracket(id);
     } else {
@@ -338,18 +335,6 @@ export default function TournamentDetailPage() {
             )}
             {tournament.status === "REGISTRATION_OPEN" && isCreator && (
               <div className="flex flex-wrap items-end gap-3 mt-2">
-                <div className="flex flex-col gap-1">
-                  <label htmlFor="first_round_start" className="text-xs text-white/60">
-                    First round start (optional)
-                  </label>
-                  <input
-                    id="first_round_start"
-                    type="datetime-local"
-                    value={firstRoundStartAt}
-                    onChange={(e) => setFirstRoundStartAt(e.target.value)}
-                    className="rounded-lg bg-black/30 border border-white/20 px-3 py-2 text-sm text-white"
-                  />
-                </div>
                 <button
                   type="button"
                   onClick={handleCloseRegistration}
