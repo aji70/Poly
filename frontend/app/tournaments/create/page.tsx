@@ -8,7 +8,9 @@ import { useTournament } from "@/context/TournamentContext";
 import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 import { appChain } from "@/config";
 import type { PrizeSource } from "@/types/tournament";
-import { ChevronLeft, Loader2, Swords } from "lucide-react";
+import { ChevronLeft, Loader2, Swords, Wallet, User, CheckCircle2 } from "lucide-react";
+
+const USDC_DECIMALS = 6;
 
 function chainIdToBackendChain(chainId: number): string {
   if (chainId === 137 || chainId === 80001) return "POLYGON";
@@ -17,10 +19,10 @@ function chainIdToBackendChain(chainId: number): string {
   return "POLYGON";
 }
 
-const PRIZE_SOURCES: { value: PrizeSource; label: string }[] = [
-  { value: "NO_POOL", label: "No prize pool" },
-  { value: "ENTRY_FEE_POOL", label: "Entry fee pool" },
-  { value: "CREATOR_FUNDED", label: "Creator funded" },
+const PRIZE_SOURCES: { value: PrizeSource; label: string; description: string }[] = [
+  { value: "NO_POOL", label: "No prize pool", description: "Free to enter, no prizes" },
+  { value: "ENTRY_FEE_POOL", label: "Entry fee pool", description: "Players pay entry; pool goes to winners" },
+  { value: "CREATOR_FUNDED", label: "Creator funded", description: "You add the prize pool (after creation)" },
 ];
 
 export default function CreateTournamentPage() {
@@ -32,18 +34,62 @@ export default function CreateTournamentPage() {
   const guestUser = guestAuth?.guestUser ?? null;
   const authLoading = guestAuth?.isLoading ?? false;
   const loginByWallet = guestAuth?.loginByWallet;
+  const loginGuest = guestAuth?.loginGuest;
   const { createTournament } = useTournament();
 
-  const canCreate = !!guestUser || (isConnected && !!address);
-
+  const [step, setStep] = useState<"idle" | "signing_in" | "creating" | "success">("idle");
   const [name, setName] = useState("");
   const chain = appChain ?? "POLYGON";
   const [prizeSource, setPrizeSource] = useState<PrizeSource>("NO_POOL");
   const [maxPlayers, setMaxPlayers] = useState(32);
   const [minPlayers, setMinPlayers] = useState(2);
-  const [entryFeeWei, setEntryFeeWei] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [entryFeeUsd, setEntryFeeUsd] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const [guestUsername, setGuestUsername] = useState("");
+  const [guestPassword, setGuestPassword] = useState("");
+  const [guestLoading, setGuestLoading] = useState(false);
+
+  const isSignedIn = !!guestUser;
+  const showAuthGate = !authLoading && !isSignedIn;
+  const canUseWallet = isConnected && !!address && !!loginByWallet;
+
+  const handleSignInWithWallet = async () => {
+    if (!address || !loginByWallet) return;
+    setError(null);
+    setStep("signing_in");
+    try {
+      const message = `Sign in to Tycoon at ${Date.now()}`;
+      const signature = await signMessageAsync({ message });
+      const walletChain = chainIdToBackendChain(chainId);
+      const res = await loginByWallet({ address, chain: walletChain, message, signature });
+      if (!res.success) {
+        setError(res.message ?? "Sign in failed. Register first via Profile.");
+        setStep("idle");
+      }
+    } catch (e) {
+      setError((e as Error)?.message ?? "Sign in failed");
+      setStep("idle");
+    }
+  };
+
+  const handleSignInAsGuest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginGuest || !guestUsername.trim() || !guestPassword) {
+      setError("Username and password required");
+      return;
+    }
+    setError(null);
+    setGuestLoading(true);
+    try {
+      const res = await loginGuest(guestUsername.trim(), guestPassword);
+      if (!res.success) setError(res.message ?? "Login failed");
+    } catch (e) {
+      setError((e as Error)?.message ?? "Login failed");
+    } finally {
+      setGuestLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,28 +97,13 @@ export default function CreateTournamentPage() {
       setError("Name is required");
       return;
     }
-    if (!canCreate) {
-      setError("Connect your wallet or sign in (guest) to create a tournament");
+    if (!isSignedIn) {
+      setError("Sign in first to create a tournament");
       return;
     }
-    setSubmitting(true);
     setError(null);
+    setStep("creating");
     try {
-      if (!guestUser && isConnected && address && loginByWallet) {
-        const message = `Sign in to Tycoon at ${Date.now()}`;
-        const signature = await signMessageAsync({ message });
-        const walletChain = chainIdToBackendChain(chainId);
-        const res = await loginByWallet({
-          address,
-          chain: walletChain,
-          message,
-          signature,
-        });
-        if (!res.success) {
-          setError(res.message ?? "Sign in with wallet failed. You may need to register first.");
-          return;
-        }
-      }
       const body: Parameters<typeof createTournament>[0] = {
         name: name.trim(),
         chain,
@@ -81,27 +112,37 @@ export default function CreateTournamentPage() {
         min_players: Math.max(2, Math.min(maxPlayers, minPlayers)),
       };
       if (prizeSource === "ENTRY_FEE_POOL") {
-        const fee = entryFeeWei ? String(BigInt(entryFeeWei)) : "0";
-        body.entry_fee_wei = Number(fee) || 0;
+        const usd = parseFloat(entryFeeUsd);
+        body.entry_fee_wei = !Number.isNaN(usd) && usd >= 0 ? Math.round(usd * 10 ** USDC_DECIMALS) : 0;
       }
       const created = await createTournament(body);
       const id = created?.id;
       if (id != null) {
-        router.push(`/tournaments/${id}`);
+        setStep("success");
+        setTimeout(() => router.push(`/tournaments/${id}`), 1200);
         return;
       }
-      setError(created ? "Invalid response from server" : "Failed to create tournament");
+      setError("Failed to create tournament");
+      setStep("idle");
     } catch (err: unknown) {
       const message =
-        (err as { response?: { data?: { message?: string } }; message?: string })?.response
-          ?.data?.message ||
+        (err as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message ||
         (err as Error)?.message ||
         "Failed to create tournament";
       setError(message);
-    } finally {
-      setSubmitting(false);
+      setStep("idle");
     }
   };
+
+  if (step === "success") {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white flex flex-col items-center justify-center px-4">
+        <CheckCircle2 className="w-16 h-16 text-emerald-400 mb-4" />
+        <h2 className="text-xl font-bold text-white mb-2">Tournament created</h2>
+        <p className="text-cyan-400/90">Taking you to the tournament page…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white">
@@ -121,121 +162,190 @@ export default function CreateTournamentPage() {
 
       <main className="max-w-xl mx-auto px-4 py-8">
         {authLoading && (
-          <p className="text-cyan-400/80 text-center py-4">Checking sign-in…</p>
-        )}
-        {!authLoading && !canCreate && (
-          <p className="text-amber-400 text-center py-4">
-            Connect your wallet or sign in as guest to create a tournament.
-          </p>
-        )}
-        {!authLoading && canCreate && !guestUser && isConnected && (
-          <p className="text-cyan-400/80 text-center py-3 text-sm">
-            Wallet connected. Click &quot;Create tournament&quot; to sign in with your wallet and create.
-          </p>
+          <div className="rounded-2xl border border-[#0E282A] bg-[#011112]/80 p-8 text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-cyan-400 mx-auto mb-3" />
+            <p className="text-cyan-400/90">Checking sign-in…</p>
+          </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium text-white/80 mb-1">
-              Tournament name *
-            </label>
-            <input
-              id="name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Weekend Cup"
-              className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none"
-              maxLength={200}
-            />
-          </div>
+        {showAuthGate && (
+          <div className="rounded-2xl border border-[#0E282A] bg-[#011112]/80 p-6 space-y-6">
+            <h2 className="text-lg font-semibold text-white">Sign in to create a tournament</h2>
+            {error && <p className="text-red-400 text-sm">{error}</p>}
 
-          <p className="text-sm text-white/60">Chain: {chain}</p>
-
-          <div>
-            <label className="block text-sm font-medium text-white/80 mb-2">
-              Prize source
-            </label>
-            <div className="space-y-2">
-              {PRIZE_SOURCES.map(({ value, label }) => (
-                <label key={value} className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="prize_source"
-                    value={value}
-                    checked={prizeSource === value}
-                    onChange={() => setPrizeSource(value)}
-                    className="text-cyan-500 focus:ring-cyan-500"
-                  />
-                  <span className="text-white/90">{label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="max_players" className="block text-sm font-medium text-white/80 mb-1">
-                Max players
-              </label>
-              <input
-                id="max_players"
-                type="number"
-                min={2}
-                max={256}
-                value={maxPlayers}
-                onChange={(e) => setMaxPlayers(Number(e.target.value) || 32)}
-                className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label htmlFor="min_players" className="block text-sm font-medium text-white/80 mb-1">
-                Min players
-              </label>
-              <input
-                id="min_players"
-                type="number"
-                min={2}
-                max={maxPlayers}
-                value={minPlayers}
-                onChange={(e) => setMinPlayers(Number(e.target.value) || 2)}
-                className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {prizeSource === "ENTRY_FEE_POOL" && (
-            <div>
-              <label htmlFor="entry_fee" className="block text-sm font-medium text-white/80 mb-1">
-                Entry fee (USDC wei, 6 decimals e.g. 1000000 = $1)
-              </label>
-              <input
-                id="entry_fee"
-                type="text"
-                value={entryFeeWei}
-                onChange={(e) => setEntryFeeWei(e.target.value.replace(/\D/g, ""))}
-                placeholder="0 for free"
-                className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none"
-              />
-            </div>
-          )}
-
-          {error && (
-            <p className="text-red-400 text-sm">{error}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={submitting || !canCreate}
-            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-cyan-500/25 border border-cyan-500/50 text-cyan-300 font-semibold hover:bg-cyan-500/35 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              "Create tournament"
+            {canUseWallet && (
+              <button
+                type="button"
+                onClick={handleSignInWithWallet}
+                disabled={step === "signing_in"}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#0E282A] border border-cyan-500/40 text-cyan-300 font-medium hover:bg-cyan-500/10 disabled:opacity-60 transition"
+              >
+                {step === "signing_in" ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Wallet className="w-5 h-5" />
+                )}
+                {step === "signing_in" ? "Signing in…" : "Sign in with wallet"}
+              </button>
             )}
-          </button>
-        </form>
+
+            {!isConnected && (
+              <p className="text-sm text-amber-400/90">
+                Connect your wallet in the menu, then refresh or use guest sign-in below.
+              </p>
+            )}
+
+            <div className="border-t border-white/10 pt-6">
+              <p className="text-sm text-white/70 mb-3">Or sign in as guest</p>
+              <form onSubmit={handleSignInAsGuest} className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Username"
+                  value={guestUsername}
+                  onChange={(e) => setGuestUsername(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#0E282A] border border-white/10 text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none text-sm"
+                />
+                <input
+                  type="password"
+                  placeholder="Password"
+                  value={guestPassword}
+                  onChange={(e) => setGuestPassword(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#0E282A] border border-white/10 text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={guestLoading}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/10 text-white/90 font-medium hover:bg-white/15 disabled:opacity-50 text-sm"
+                >
+                  {guestLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <User className="w-4 h-4" />}
+                  Sign in as guest
+                </button>
+              </form>
+              <p className="text-xs text-white/50 mt-2">No account? Use any username and password to create one.</p>
+            </div>
+          </div>
+        )}
+
+        {!authLoading && isSignedIn && (
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <p className="text-sm text-emerald-400/90 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Signed in as {guestUser?.username ?? "user"}
+            </p>
+
+            <div>
+              <label htmlFor="name" className="block text-sm font-medium text-white/90 mb-1.5">
+                Tournament name *
+              </label>
+              <input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Weekend Cup"
+                className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none"
+                maxLength={200}
+              />
+            </div>
+
+            <p className="text-sm text-white/50">Chain: {chain}</p>
+
+            <div>
+              <label className="block text-sm font-medium text-white/90 mb-2">Prize source</label>
+              <div className="space-y-3">
+                {PRIZE_SOURCES.map(({ value, label, description }) => (
+                  <label
+                    key={value}
+                    className={`flex flex-col gap-0.5 p-3 rounded-xl border cursor-pointer transition ${
+                      prizeSource === value
+                        ? "bg-cyan-500/10 border-cyan-500/50"
+                        : "bg-[#011112]/50 border-[#0E282A] hover:border-white/20"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="radio"
+                        name="prize_source"
+                        value={value}
+                        checked={prizeSource === value}
+                        onChange={() => setPrizeSource(value)}
+                        className="text-cyan-500 focus:ring-cyan-500"
+                      />
+                      <span className="font-medium text-white/95">{label}</span>
+                    </div>
+                    <span className="text-xs text-white/55 pl-6">{description}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="max_players" className="block text-sm font-medium text-white/90 mb-1">
+                  Max players
+                </label>
+                <input
+                  id="max_players"
+                  type="number"
+                  min={2}
+                  max={256}
+                  value={maxPlayers}
+                  onChange={(e) => setMaxPlayers(Number(e.target.value) || 32)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
+                />
+                <p className="text-xs text-white/50 mt-1">e.g. 8 for a single-elimination bracket</p>
+              </div>
+              <div>
+                <label htmlFor="min_players" className="block text-sm font-medium text-white/90 mb-1">
+                  Min players
+                </label>
+                <input
+                  id="min_players"
+                  type="number"
+                  min={2}
+                  max={maxPlayers}
+                  value={minPlayers}
+                  onChange={(e) => setMinPlayers(Number(e.target.value) || 2)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white focus:border-cyan-500/50 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {prizeSource === "ENTRY_FEE_POOL" && (
+              <div>
+                <label htmlFor="entry_fee" className="block text-sm font-medium text-white/90 mb-1">
+                  Entry fee (USDC)
+                </label>
+                <input
+                  id="entry_fee"
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={entryFeeUsd}
+                  onChange={(e) => setEntryFeeUsd(e.target.value)}
+                  placeholder="0 for free, e.g. 1 for $1"
+                  className="w-full px-4 py-3 rounded-xl bg-[#011112] border border-[#0E282A] text-white placeholder-white/40 focus:border-cyan-500/50 focus:outline-none"
+                />
+                <p className="text-xs text-white/50 mt-1">Amount in USDC (e.g. 1 = $1)</p>
+              </div>
+            )}
+
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+
+            <button
+              type="submit"
+              disabled={step === "creating"}
+              className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-cyan-500/30 border border-cyan-500/60 text-cyan-200 font-semibold hover:bg-cyan-500/40 disabled:opacity-60 disabled:cursor-not-allowed transition"
+            >
+              {step === "creating" ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Swords className="w-5 h-5" />
+              )}
+              {step === "creating" ? "Creating tournament…" : "Create tournament"}
+            </button>
+          </form>
+        )}
       </main>
     </div>
   );
