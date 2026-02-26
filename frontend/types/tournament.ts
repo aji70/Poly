@@ -59,6 +59,7 @@ export interface TournamentRound {
   status: RoundStatus;
   started_at: string | null;
   completed_at: string | null;
+  scheduled_start_at: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -94,6 +95,7 @@ export interface TournamentDetail extends Tournament {
 export interface BracketRound {
   round_index: number;
   status: RoundStatus;
+  scheduled_start_at?: string | null;
   matches: {
     id: number;
     match_index: number;

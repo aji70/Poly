@@ -58,11 +58,28 @@ type TournamentContextValue = {
     tournamentId: string,
     body?: RegisterTournamentBody
   ) => Promise<{ success: boolean; message?: string }>;
-  closeRegistration: (tournamentId: string) => Promise<{ success: boolean; message?: string }>;
+  closeRegistration: (
+    tournamentId: string,
+    body?: { first_round_start_at?: string }
+  ) => Promise<{ success: boolean; message?: string }>;
   startRound: (
     tournamentId: string,
     roundIndex: number
   ) => Promise<{ success: boolean; message?: string }>;
+  requestMatchStart: (
+    tournamentId: string,
+    matchId: string
+  ) => Promise<{
+    success: boolean;
+    message?: string;
+    data?: {
+      game_id?: number;
+      code?: string;
+      redirect_url?: string;
+      waiting?: boolean;
+      forfeit_win?: boolean;
+    };
+  }>;
 
   // Helpers
   isRegistered: (tournamentId: number) => boolean;
@@ -226,9 +243,15 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   );
 
   const closeRegistration = useCallback(
-    async (tournamentId: string): Promise<{ success: boolean; message?: string }> => {
+    async (
+      tournamentId: string,
+      body?: { first_round_start_at?: string }
+    ): Promise<{ success: boolean; message?: string }> => {
       try {
-        await apiClient.post(`${TOURNAMENTS_BASE}/${tournamentId}/close-registration`);
+        await apiClient.post(
+          `${TOURNAMENTS_BASE}/${tournamentId}/close-registration`,
+          body ?? {}
+        );
         return { success: true };
       } catch (err: unknown) {
         const message =
@@ -258,6 +281,48 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
             ?.data?.message ||
           (err as { message?: string })?.message ||
           "Failed to start round";
+        return { success: false, message };
+      }
+    },
+    []
+  );
+
+  const requestMatchStart = useCallback(
+    async (
+      tournamentId: string,
+      matchId: string
+    ): Promise<{
+      success: boolean;
+      message?: string;
+      data?: {
+        game_id?: number;
+        code?: string;
+        redirect_url?: string;
+        waiting?: boolean;
+        forfeit_win?: boolean;
+      };
+    }> => {
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          data?: {
+            game_id?: number;
+            code?: string;
+            redirect_url?: string;
+            waiting?: boolean;
+            forfeit_win?: boolean;
+          };
+        }>(`${TOURNAMENTS_BASE}/${tournamentId}/matches/${matchId}/start-now`);
+        return {
+          success: true,
+          data: res?.data?.data,
+        };
+      } catch (err: unknown) {
+        const message =
+          (err as { response?: { data?: { message?: string } }; message?: string })?.response
+            ?.data?.message ||
+          (err as { message?: string })?.message ||
+          "Start failed";
         return { success: false, message };
       }
     },
@@ -301,6 +366,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       registerForTournament,
       closeRegistration,
       startRound,
+      requestMatchStart,
       isRegistered,
     }),
     [
@@ -325,6 +391,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
       registerForTournament,
       closeRegistration,
       startRound,
+      requestMatchStart,
       isRegistered,
     ]
   );

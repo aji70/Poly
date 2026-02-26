@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useAccount } from "wagmi";
 import { useTournament } from "@/context/TournamentContext";
 import { useGuestAuthOptional } from "@/context/GuestAuthContext";
+import { useRegisterForTournamentOnChain } from "@/hooks/useRegisterForTournamentOnChain";
 import {
   ChevronLeft,
   Loader2,
@@ -65,14 +66,83 @@ export default function TournamentDetailPage() {
     registerForTournament,
     closeRegistration,
     startRound,
+    requestMatchStart,
     isRegistered,
   } = useTournament();
 
+  const [startNowMatchId, setStartNowMatchId] = useState<number | null>(null);
+  const [firstRoundStartAt, setFirstRoundStartAt] = useState<string>("");
+  const START_WINDOW_MINUTES = 5;
+
+  const isInMatch = useCallback(
+    (m: { slot_a_entry_id: number | null; slot_b_entry_id: number | null }) => {
+      if (!tournament?.entries) return false;
+      const uid = guestUser?.id;
+      const addr = (walletAddress ?? guestUser?.address)?.toLowerCase();
+      return tournament.entries.some(
+        (e) =>
+          (e.id === m.slot_a_entry_id || e.id === m.slot_b_entry_id) &&
+          ((uid != null && e.user_id === uid) || (addr != null && e.address?.toLowerCase() === addr))
+      );
+    },
+    [tournament?.entries, guestUser?.id, guestUser?.address, walletAddress]
+  );
+
+  const isInStartWindow = useCallback(
+    (scheduledStartAt: string | null | undefined) => {
+      if (!scheduledStartAt) return false;
+      const start = new Date(scheduledStartAt).getTime();
+      const end = start + START_WINDOW_MINUTES * 60 * 1000;
+      const now = Date.now();
+      return now >= start && now <= end;
+    },
+    []
+  );
+
+  const handleStartNow = useCallback(
+    async (matchId: number) => {
+      if (!id || startNowMatchId != null) return;
+      setStartNowMatchId(matchId);
+      setActionError(null);
+      setActionSuccess(null);
+      try {
+        const res = await requestMatchStart(id, String(matchId));
+        if (!res.success) {
+          setActionError(res.message ?? "Start failed");
+          return;
+        }
+        if (res.data?.redirect_url) {
+          setActionSuccess("Starting game...");
+          window.location.href = res.data.redirect_url;
+          return;
+        }
+        if (res.data?.forfeit_win) {
+          setActionSuccess("You win by forfeit!");
+          fetchBracket(id);
+          fetchTournament(id);
+        } else if (res.data?.waiting) {
+          setActionSuccess("Waiting for opponent — they have 5 minutes to click Start now.");
+        }
+      } catch (e) {
+        setActionError((e as Error)?.message ?? "Start failed");
+      } finally {
+        setStartNowMatchId(null);
+      }
+    },
+    [id, requestMatchStart, fetchBracket, fetchTournament, startNowMatchId]
+  );
+
+  const { register: registerOnChain, isPending: isOnChainPending } = useRegisterForTournamentOnChain();
+
   const isCreator = tournament && guestUser && tournament.creator_id === guestUser.id;
+  const entryFeeWei = Number(tournament?.entry_fee_wei ?? 0);
+  const isPaidTournament =
+    tournament?.prize_source === "ENTRY_FEE_POOL" && entryFeeWei > 0;
+
   const canRegister =
     tournament?.status === "REGISTRATION_OPEN" &&
-    (guestUser != null || walletAddress != null) &&
-    !isRegistered(tournament.id);
+    !isRegistered(tournament.id) &&
+    (isPaidTournament ? walletAddress != null : walletAddress != null || guestUser != null);
 
   useEffect(() => {
     if (!id) return;
@@ -92,14 +162,38 @@ export default function TournamentDetailPage() {
   }, [id, tournament?.id, tournament?.status, fetchBracket, fetchLeaderboard]);
 
   const handleRegister = async () => {
-    if (!id || !canRegister) return;
+    if (!id || !canRegister || !tournament) return;
+
+    const entryFeeWei = Number(tournament.entry_fee_wei ?? 0);
+    const isPaid = tournament.prize_source === "ENTRY_FEE_POOL" && entryFeeWei > 0;
+
+    // Paid tournaments require wallet for on-chain payment
+    if (isPaid && !walletAddress) {
+      setActionError("Connect your wallet to pay the entry fee");
+      return;
+    }
+
     setRegistering(true);
     setActionError(null);
     setActionSuccess(null);
     try {
+      let registrationTxHash: string | null = null;
+
+      // On-chain registration: wallet users (free and paid), or paid-only for guests
+      if (walletAddress) {
+        const hash = await registerOnChain(Number(id), entryFeeWei);
+        if (!hash) {
+          setActionError("On-chain registration failed");
+          return;
+        }
+        registrationTxHash = hash;
+      }
+      // Guest + free: backend-only (no on-chain call)
+
       const res = await registerForTournament(id, {
         address: (walletAddress ?? guestUser?.address) ?? undefined,
-        chain: tournament?.chain,
+        chain: tournament.chain,
+        payment_tx_hash: registrationTxHash ?? undefined,
       });
       if (res.success) {
         setActionSuccess("Registered!");
@@ -118,9 +212,11 @@ export default function TournamentDetailPage() {
     if (!id || !isCreator) return;
     setActionError(null);
     setActionSuccess(null);
-    const res = await closeRegistration(id);
+    const body = firstRoundStartAt.trim() ? { first_round_start_at: firstRoundStartAt.trim() } : undefined;
+    const res = await closeRegistration(id, body);
     if (res.success) {
       setActionSuccess("Registration closed. Bracket generated.");
+      setFirstRoundStartAt("");
       fetchTournament(id);
       fetchBracket(id);
     } else {
@@ -218,10 +314,10 @@ export default function TournamentDetailPage() {
               <button
                 type="button"
                 onClick={handleRegister}
-                disabled={registering}
+                disabled={registering || isOnChainPending}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/25 border border-cyan-500/50 text-cyan-300 font-medium hover:bg-cyan-500/35 disabled:opacity-50"
               >
-                {registering ? (
+                {registering || isOnChainPending ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <UserPlus className="w-4 h-4" />
@@ -230,14 +326,28 @@ export default function TournamentDetailPage() {
               </button>
             )}
             {tournament.status === "REGISTRATION_OPEN" && isCreator && (
-              <button
-                type="button"
-                onClick={handleCloseRegistration}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 font-medium hover:bg-amber-500/30"
-              >
-                <Lock className="w-4 h-4" />
-                Close registration & generate bracket
-              </button>
+              <div className="flex flex-wrap items-end gap-3 mt-2">
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="first_round_start" className="text-xs text-white/60">
+                    First round start (optional)
+                  </label>
+                  <input
+                    id="first_round_start"
+                    type="datetime-local"
+                    value={firstRoundStartAt}
+                    onChange={(e) => setFirstRoundStartAt(e.target.value)}
+                    className="rounded-lg bg-black/30 border border-white/20 px-3 py-2 text-sm text-white"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCloseRegistration}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-300 font-medium hover:bg-amber-500/30"
+                >
+                  <Lock className="w-4 h-4" />
+                  Close registration & generate bracket
+                </button>
+              </div>
             )}
             {nextRoundToStart != null && isCreator && (
               <button
@@ -268,45 +378,88 @@ export default function TournamentDetailPage() {
             )}
             {!bracketLoading && bracket && (
               <div className="space-y-6">
-                {bracket.rounds.map((r: BracketRound) => (
-                  <div
-                    key={r.round_index}
-                    className="rounded-xl border border-[#0E282A] bg-[#011112]/60 p-4"
-                  >
-                    <p className="text-sm font-medium text-white/70 mb-3">
-                      Round {r.round_index + 1} — {r.status}
-                    </p>
-                    <div className="space-y-2">
-                      {r.matches?.map((m) => (
-                        <div
-                          key={m.id}
-                          className="flex items-center justify-between gap-2 py-2 px-3 rounded-lg bg-black/20 text-sm"
-                        >
-                          <span className="truncate">
-                            {m.slot_a_username ?? (m.slot_a_type === "BYE" ? "BYE" : "—")}
-                          </span>
-                          <span className="text-white/50">vs</span>
-                          <span className="truncate">
-                            {m.slot_b_username ?? (m.slot_b_type === "BYE" ? "BYE" : "—")}
-                          </span>
-                          {m.winner_username && (
-                            <span className="text-cyan-400 text-xs">
-                              Winner: {m.winner_username}
-                            </span>
-                          )}
-                          {m.game_id && (
-                            <Link
-                              href={`/game-waiting?gameId=${m.game_id}`}
-                              className="text-cyan-400 hover:underline text-xs"
+                {bracket.rounds.map((r: BracketRound) => {
+                  const scheduledAt = r.scheduled_start_at
+                    ? new Date(r.scheduled_start_at).toLocaleString(undefined, {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })
+                    : null;
+                  const canStartNow =
+                    r.scheduled_start_at &&
+                    isInStartWindow(r.scheduled_start_at);
+                  return (
+                    <div
+                      key={r.round_index}
+                      className="rounded-xl border border-[#0E282A] bg-[#011112]/60 p-4"
+                    >
+                      <p className="text-sm font-medium text-white/70 mb-1">
+                        Round {r.round_index + 1} — {r.status}
+                      </p>
+                      {scheduledAt && (
+                        <p className="text-xs text-cyan-400/80 mb-3">
+                          Start window: {scheduledAt} (5 min)
+                        </p>
+                      )}
+                      <div className="space-y-2">
+                        {r.matches?.map((m) => {
+                          const showStartNow =
+                            canStartNow &&
+                            !m.game_id &&
+                            m.status !== "BYE" &&
+                            isInMatch(m);
+                          return (
+                            <div
+                              key={m.id}
+                              className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 rounded-lg bg-black/20 text-sm"
                             >
-                              Play
-                            </Link>
-                          )}
-                        </div>
-                      ))}
+                              <span className="truncate">
+                                {m.slot_a_username ?? (m.slot_a_type === "BYE" ? "BYE" : "—")}
+                              </span>
+                              <span className="text-white/50">vs</span>
+                              <span className="truncate">
+                                {m.slot_b_username ?? (m.slot_b_type === "BYE" ? "BYE" : "—")}
+                              </span>
+                              {m.winner_username && (
+                                <span className="text-cyan-400 text-xs">
+                                  Winner: {m.winner_username}
+                                </span>
+                              )}
+                              {m.game_id && (
+                                <Link
+                                  href={`/game-waiting?gameId=${m.game_id}`}
+                                  className="text-cyan-400 hover:underline text-xs"
+                                >
+                                  Play
+                                </Link>
+                              )}
+                              {showStartNow && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartNow(m.id)}
+                                  disabled={startNowMatchId != null}
+                                  className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-xs font-medium hover:bg-cyan-500/30 disabled:opacity-50"
+                                >
+                                  {startNowMatchId === m.id ? (
+                                    <>
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                      Starting...
+                                    </>
+                                  ) : (
+                                    "Start now"
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
