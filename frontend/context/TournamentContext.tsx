@@ -69,7 +69,8 @@ type TournamentContextValue = {
   ) => Promise<{ success: boolean; message?: string }>;
   requestMatchStart: (
     tournamentId: string,
-    matchId: string
+    matchId: string,
+    options?: { symbol?: string }
   ) => Promise<{
     success: boolean;
     message?: string;
@@ -299,7 +300,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const requestMatchStart = useCallback(
     async (
       tournamentId: string,
-      matchId: string
+      matchId: string,
+      options?: { symbol?: string }
     ): Promise<{
       success: boolean;
       message?: string;
@@ -321,7 +323,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
             waiting?: boolean;
             forfeit_win?: boolean;
           };
-        }>(`${TOURNAMENTS_BASE}/${tournamentId}/matches/${matchId}/start-now`);
+        }>(`${TOURNAMENTS_BASE}/${tournamentId}/matches/${matchId}/start-now`, {
+          ...(options?.symbol && { symbol: options.symbol }),
+        });
         return {
           success: true,
           data: res?.data?.data,

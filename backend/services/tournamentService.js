@@ -294,8 +294,17 @@ async function createMatchGame(tournamentId, matchId) {
   const canBackendJoin = userA?.password_hash && userB?.password_hash && isContractConfigured(chain);
 
   const code = `T${tournamentId}-R${match.round_index}-M${match.match_index}`.toUpperCase();
-  const symbolA = TOURNAMENT_SYMBOLS[0];
-  const symbolB = TOURNAMENT_SYMBOLS[1];
+
+  // Resolve preferred symbols from "Start now" requests so initiator can choose their token.
+  const startRequests = await db("tournament_match_start_requests").where({ match_id: matchId }).select("entry_id", "preferred_symbol");
+  const prefByEntry = Object.fromEntries(
+    (startRequests || []).map((r) => [r.entry_id, r.preferred_symbol])
+  );
+  let symbolA = TOURNAMENT_SYMBOLS.includes(prefByEntry[entryA.id]) ? prefByEntry[entryA.id] : TOURNAMENT_SYMBOLS[0];
+  let symbolB = TOURNAMENT_SYMBOLS.includes(prefByEntry[entryB.id]) ? prefByEntry[entryB.id] : TOURNAMENT_SYMBOLS[1];
+  if (symbolA === symbolB) {
+    symbolB = TOURNAMENT_SYMBOLS.find((s) => s !== symbolA) || TOURNAMENT_SYMBOLS[1];
+  }
 
   // If contract not configured, create DB-only lobby (players create/join via wallet).
   if (!isContractConfigured(chain)) {
@@ -817,7 +826,7 @@ async function resolveForfeitForMatch(matchId) {
  * If 2+ players have requested in window, creates game and returns redirect. If 1 after window closes, resolves forfeit.
  * @returns {{ game_id, code, redirect_url } | { waiting: true } | { forfeit_win: true } | { forfeit_win: false } | { error: string }}
  */
-export async function requestMatchStart(tournamentId, matchId, userId) {
+export async function requestMatchStart(tournamentId, matchId, userId, preferredSymbol = null) {
   const match = await TournamentMatch.findById(matchId);
   if (!match || match.tournament_id !== Number(tournamentId)) throw new Error("Match not found");
   if (match.status === "BYE" || match.status === "COMPLETED") throw new Error("Match not available");
@@ -844,19 +853,29 @@ export async function requestMatchStart(tournamentId, matchId, userId) {
     throw new Error("Start window has closed");
   }
 
+  const validSymbol =
+    preferredSymbol && typeof preferredSymbol === "string" && TOURNAMENT_SYMBOLS.includes(preferredSymbol.toLowerCase())
+      ? preferredSymbol.toLowerCase()
+      : null;
+
   const existing = await db("tournament_match_start_requests")
     .where({ match_id: matchId, entry_id: entry.id })
     .first();
+  const requestRow = {
+    match_id: matchId,
+    entry_id: entry.id,
+    requested_at: now,
+  };
+  if (validSymbol != null) requestRow.preferred_symbol = validSymbol;
+
   if (existing) {
+    const updatePayload = { requested_at: now, updated_at: db.fn.now() };
+    if (validSymbol != null) updatePayload.preferred_symbol = validSymbol;
     await db("tournament_match_start_requests")
       .where({ match_id: matchId, entry_id: entry.id })
-      .update({ requested_at: now, updated_at: db.fn.now() });
+      .update(updatePayload);
   } else {
-    await db("tournament_match_start_requests").insert({
-      match_id: matchId,
-      entry_id: entry.id,
-      requested_at: now,
-    });
+    await db("tournament_match_start_requests").insert(requestRow);
   }
 
   const requests = await db("tournament_match_start_requests").where({ match_id: matchId });

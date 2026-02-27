@@ -19,6 +19,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import type { Bracket, BracketRound, TournamentDetail } from "@/types/tournament";
+import { symbols as symbolOptions } from "@/lib/types/symbol";
 
 function formatEntryFee(wei: string | number): string {
   const n = Number(wei);
@@ -104,6 +105,8 @@ export default function TournamentDetailPage() {
   } = useTournament();
 
   const [startNowMatchId, setStartNowMatchId] = useState<number | null>(null);
+  const [startNowModalMatchId, setStartNowModalMatchId] = useState<number | null>(null);
+  const [selectedStartSymbol, setSelectedStartSymbol] = useState<string>("hat");
   const [creatingRoundIndex, setCreatingRoundIndex] = useState<number | null>(null);
   const START_WINDOW_MINUTES = 5;
 
@@ -132,18 +135,26 @@ export default function TournamentDetailPage() {
     []
   );
 
-  const handleStartNow = useCallback(
-    async (matchId: number) => {
-      if (!id || startNowMatchId != null) return;
+  const handleOpenStartNowModal = useCallback((matchId: number) => {
+    setActionError(null);
+    setStartNowModalMatchId(matchId);
+    setSelectedStartSymbol("hat");
+  }, []);
+
+  const handleConfirmStartNow = useCallback(
+    async () => {
+      const matchId = startNowModalMatchId;
+      if (!id || matchId == null || startNowMatchId != null) return;
       setStartNowMatchId(matchId);
       setActionError(null);
       setActionSuccess(null);
       try {
-        const res = await requestMatchStart(id, String(matchId));
+        const res = await requestMatchStart(id, String(matchId), { symbol: selectedStartSymbol });
         if (!res.success) {
           setActionError(res.message ?? "Start failed");
           return;
         }
+        setStartNowModalMatchId(null);
         if (res.data?.redirect_url) {
           setActionSuccess("Starting game...");
           window.location.href = res.data.redirect_url;
@@ -162,8 +173,12 @@ export default function TournamentDetailPage() {
         setStartNowMatchId(null);
       }
     },
-    [id, requestMatchStart, fetchBracket, fetchTournament, startNowMatchId]
+    [id, startNowModalMatchId, selectedStartSymbol, requestMatchStart, fetchBracket, fetchTournament, startNowMatchId]
   );
+
+  const handleCloseStartNowModal = useCallback(() => {
+    if (startNowMatchId == null) setStartNowModalMatchId(null);
+  }, [startNowMatchId]);
 
   const { register: registerOnChain, isPending: isOnChainPending } = useRegisterForTournamentOnChain();
 
@@ -504,8 +519,8 @@ export default function TournamentDetailPage() {
                                   ) : showStartNow ? (
                                     <button
                                       type="button"
-                                      onClick={() => handleStartNow(m.id)}
-                                      disabled={startNowMatchId != null}
+                                      onClick={() => handleOpenStartNowModal(m.id)}
+                                      disabled={startNowMatchId != null || startNowModalMatchId != null}
                                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 disabled:opacity-50 transition-colors"
                                     >
                                       {startNowMatchId === m.id ? (
@@ -628,6 +643,58 @@ export default function TournamentDetailPage() {
               ))}
             </ul>
           </section>
+        )}
+
+        {/* Start now: choose token modal */}
+        {startNowModalMatchId != null && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="start-now-modal-title"
+          >
+            <div className="bg-[#0d1f23] border border-cyan-500/30 rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl">
+              <h2 id="start-now-modal-title" className="text-lg font-semibold text-white mb-3">
+                Choose your token
+              </h2>
+              <p className="text-sm text-white/70 mb-4">
+                You’re starting this match. Pick the token you’ll use for the game; your opponent will choose theirs in the lobby.
+              </p>
+              <label className="block text-sm text-white/70 mb-2" htmlFor="start-now-symbol">
+                Token
+              </label>
+              <select
+                id="start-now-symbol"
+                value={selectedStartSymbol}
+                onChange={(e) => setSelectedStartSymbol(e.target.value)}
+                className="w-full bg-black/30 border border-cyan-500/40 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 mb-5"
+              >
+                {symbolOptions.map((s) => (
+                  <option key={s.value} value={s.value} className="bg-[#0d1f23]">
+                    {s.emoji} {s.name}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={handleCloseStartNowModal}
+                  disabled={startNowMatchId != null}
+                  className="flex-1 py-2 rounded-lg border border-white/30 text-white/90 hover:bg-white/10 disabled:opacity-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmStartNow}
+                  disabled={startNowMatchId != null}
+                  className="flex-1 py-2 rounded-lg bg-cyan-500/80 text-black font-semibold hover:bg-cyan-500 disabled:opacity-50 transition-colors"
+                >
+                  {startNowMatchId != null ? "Starting…" : "Start game"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
