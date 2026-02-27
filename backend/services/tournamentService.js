@@ -58,27 +58,46 @@ export async function createTournament(data) {
 
   const tournament = await Tournament.create(payload);
 
-  if (isEscrowConfigured(normalizedChain)) {
-    User.findById(creator_id)
-      .then((creator) => {
-        const creatorAddress =
-          (creator?.address && String(creator.address).trim()) ||
-          (creator?.linked_wallet_address && String(creator.linked_wallet_address).trim()) ||
-          "0x0000000000000000000000000000000000000000";
-        return createTournamentOnChain(
-          tournament.id,
-          tournament.entry_fee_wei ?? 0,
-          creatorAddress,
-          normalizedChain
-        );
-      })
-      .then(() => logger.info({ tournamentId: tournament.id, chain: normalizedChain }, "Escrow createTournament succeeded"))
-      .catch((err) =>
-        logger.error({ err: err?.message, tournamentId: tournament.id, chain: normalizedChain }, "Escrow createTournament failed; tournament saved in DB only")
-      );
+  if (!isEscrowConfigured(normalizedChain)) {
+    await Tournament.delete(tournament.id);
+    throw new Error(
+      "Tournament escrow not configured for this chain (set TOURNAMENT_ESCROW_ADDRESS_* env). Tournament was not created."
+    );
   }
 
-  return tournament;
+  try {
+    const creator = await User.findById(creator_id);
+    const creatorAddress =
+      (creator?.address && String(creator.address).trim()) ||
+      (creator?.linked_wallet_address && String(creator.linked_wallet_address).trim()) ||
+      "0x0000000000000000000000000000000000000000";
+    const result = await createTournamentOnChain(
+      tournament.id,
+      tournament.entry_fee_wei ?? 0,
+      creatorAddress,
+      normalizedChain
+    );
+    if (result == null) {
+      await Tournament.delete(tournament.id);
+      throw new Error("On-chain tournament creation did not complete (escrow returned null). Tournament was not created.");
+    }
+    const onChainTxHash = result.hash ?? null;
+    logger.info({ tournamentId: tournament.id, chain: normalizedChain, hash: onChainTxHash }, "Escrow createTournament succeeded");
+    return {
+      ...tournament,
+      created_on_chain: true,
+      on_chain_error: null,
+      on_chain_tx_hash: onChainTxHash,
+    };
+  } catch (err) {
+    await Tournament.delete(tournament.id);
+    const msg = err?.message || String(err);
+    logger.error(
+      { err: msg, tournamentId: tournament.id, chain: normalizedChain },
+      "Escrow createTournament failed; tournament rolled back from DB"
+    );
+    throw new Error(`Tournament creation failed on-chain: ${msg}. Tournament was not created.`);
+  }
 }
 
 /**

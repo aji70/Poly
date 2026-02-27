@@ -136,6 +136,13 @@ export interface LeaderboardData {
   entries: LeaderboardEntry[];
 }
 
+/** Create tournament API response: tournament plus on-chain creation result. */
+export interface CreateTournamentResponse extends Tournament {
+  created_on_chain: boolean;
+  on_chain_error: string | null;
+  on_chain_tx_hash: string | null;
+}
+
 /** Create tournament body (backend expects chain required). */
 export interface CreateTournamentBody {
   name: string;

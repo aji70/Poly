@@ -17,6 +17,7 @@ import type {
   Bracket,
   LeaderboardData,
   CreateTournamentBody,
+  CreateTournamentResponse,
   RegisterTournamentBody,
 } from "@/types/tournament";
 
@@ -53,7 +54,7 @@ type TournamentContextValue = {
   fetchLeaderboard: (id: string, phase?: "live" | "final") => Promise<void>;
 
   // Mutations
-  createTournament: (body: CreateTournamentBody) => Promise<Tournament | null>;
+  createTournament: (body: CreateTournamentBody) => Promise<CreateTournamentResponse | null>;
   registerForTournament: (
     tournamentId: string,
     body?: RegisterTournamentBody
@@ -216,9 +217,9 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  const createTournament = useCallback(async (body: CreateTournamentBody): Promise<Tournament | null> => {
+  const createTournament = useCallback(async (body: CreateTournamentBody): Promise<CreateTournamentResponse | null> => {
     try {
-      const res = await apiClient.post<Tournament>(TOURNAMENTS_BASE, body);
+      const res = await apiClient.post<CreateTournamentResponse>(TOURNAMENTS_BASE, body);
       return res?.data ?? null;
     } catch (err: unknown) {
       throw err;

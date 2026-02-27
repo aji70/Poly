@@ -7,7 +7,7 @@ import { useAccount, useChainId, useSignMessage } from "wagmi";
 import { useTournament } from "@/context/TournamentContext";
 import { useGuestAuthOptional } from "@/context/GuestAuthContext";
 import { appChain } from "@/config";
-import type { PrizeSource } from "@/types/tournament";
+import type { PrizeSource, CreateTournamentResponse } from "@/types/tournament";
 import { ChevronLeft, Loader2, Swords, Wallet, User, CheckCircle2 } from "lucide-react";
 
 const USDC_DECIMALS = 6;
@@ -38,6 +38,7 @@ export default function CreateTournamentPage() {
   const { createTournament } = useTournament();
 
   const [step, setStep] = useState<"idle" | "signing_in" | "creating" | "success">("idle");
+  const [createdResult, setCreatedResult] = useState<CreateTournamentResponse | null>(null);
   const [name, setName] = useState("");
   const chain = appChain ?? "POLYGON";
   const [prizeSource, setPrizeSource] = useState<PrizeSource>("NO_POOL");
@@ -121,9 +122,10 @@ export default function CreateTournamentPage() {
         const usd = parseFloat(entryFeeUsd);
         body.entry_fee_wei = !Number.isNaN(usd) && usd >= 0 ? Math.round(usd * 10 ** USDC_DECIMALS) : 0;
       }
-      const created = await createTournament(body);
-      const slug = (created as { code?: string; id?: number })?.code ?? (created as { id?: number })?.id;
+      const created = await createTournament(body) as CreateTournamentResponse | null;
+      const slug = created?.code ?? created?.id;
       if (slug != null) {
+        setCreatedResult(created ?? null);
         setStep("success");
         setTimeout(() => router.push(`/tournaments/${slug}`), 1200);
         return;
@@ -140,12 +142,42 @@ export default function CreateTournamentPage() {
     }
   };
 
+  function txExplorerUrl(chainName: string, txHash: string): string {
+    const chain = String(chainName).toUpperCase();
+    if (chain === "POLYGON") return `https://polygonscan.com/tx/${txHash}`;
+    if (chain === "BASE") return `https://basescan.org/tx/${txHash}`;
+    if (chain === "CELO") return `https://celoscan.io/tx/${txHash}`;
+    return `https://polygonscan.com/tx/${txHash}`;
+  }
+
   if (step === "success") {
+    const onChain = createdResult?.created_on_chain ?? false;
+    const onChainError = createdResult?.on_chain_error ?? null;
+    const txHash = createdResult?.on_chain_tx_hash ?? null;
+    const chainName = createdResult?.chain ?? chain;
     return (
       <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white flex flex-col items-center justify-center px-4">
         <CheckCircle2 className="w-16 h-16 text-emerald-400 mb-4" />
         <h2 className="text-xl font-bold text-white mb-2">Tournament created</h2>
-        <p className="text-cyan-400/90">Taking you to the tournament page…</p>
+        {onChain && (
+          <p className="text-emerald-400/90 mb-1">Registered on-chain.</p>
+        )}
+        {!onChain && onChainError && (
+          <p className="text-amber-400/90 text-sm text-center max-w-md mb-1">
+            Saved; not on-chain: {onChainError}
+          </p>
+        )}
+        {txHash && (
+          <a
+            href={txExplorerUrl(chainName, txHash)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-400 hover:text-cyan-300 text-sm underline mt-1"
+          >
+            View transaction
+          </a>
+        )}
+        <p className="text-cyan-400/90 mt-3">Taking you to the tournament page…</p>
       </div>
     );
   }
