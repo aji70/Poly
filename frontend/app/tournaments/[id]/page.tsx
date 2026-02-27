@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useAccount } from "wagmi";
@@ -18,7 +18,7 @@ import {
   Play,
   AlertCircle,
 } from "lucide-react";
-import type { BracketRound } from "@/types/tournament";
+import type { Bracket, BracketRound, TournamentDetail } from "@/types/tournament";
 
 function formatEntryFee(wei: string | number): string {
   const n = Number(wei);
@@ -41,6 +41,39 @@ function statusColor(status: string): string {
     default:
       return "text-white/70";
   }
+}
+
+/** Build bracket from tournament detail (rounds + matches + entries) so players see bracket even if bracket API fails or is slow. */
+function buildBracketFromTournament(t: TournamentDetail | null): Bracket | null {
+  if (!t?.rounds?.length || !t?.matches) return null;
+  const entryMap = new Map((t.entries ?? []).map((e) => [e.id, e]));
+  const rounds: BracketRound[] = t.rounds
+    .slice()
+    .sort((a, b) => (a.round_index ?? 0) - (b.round_index ?? 0))
+    .map((r) => {
+      const roundMatches = t.matches.filter((m) => m.round_index === r.round_index);
+      return {
+        round_index: r.round_index,
+        status: r.status,
+        scheduled_start_at: r.scheduled_start_at ?? null,
+        matches: roundMatches.map((m) => ({
+          id: m.id,
+          match_index: m.match_index,
+          slot_a_entry_id: m.slot_a_entry_id,
+          slot_b_entry_id: m.slot_b_entry_id,
+          slot_a_type: m.slot_a_type,
+          slot_b_type: m.slot_b_type,
+          winner_entry_id: m.winner_entry_id,
+          game_id: m.game_id,
+          contract_game_id: m.contract_game_id ?? null,
+          status: m.status,
+          slot_a_username: m.slot_a_entry_id ? (entryMap.get(m.slot_a_entry_id)?.username ?? null) : null,
+          slot_b_username: m.slot_b_entry_id ? (entryMap.get(m.slot_b_entry_id)?.username ?? null) : null,
+          winner_username: m.winner_entry_id ? (entryMap.get(m.winner_entry_id)?.username ?? null) : null,
+        })),
+      };
+    });
+  return { tournament: { id: t.id, name: t.name, status: t.status }, rounds };
 }
 
 export default function TournamentDetailPage() {
@@ -291,8 +324,9 @@ export default function TournamentDetailPage() {
   }
 
   const entryCount = tournament.entries?.length ?? 0;
+  const displayBracket = bracket ?? buildBracketFromTournament(tournament);
   const nextRoundToStart =
-    bracket?.rounds?.find(
+    displayBracket?.rounds?.find(
       (r) => r.status === "PENDING" && r.matches?.some((m) => m.status === "PENDING" || m.status === "AWAITING_PLAYERS")
     );
 
@@ -388,14 +422,14 @@ export default function TournamentDetailPage() {
               <Swords className="w-5 h-5" />
               Bracket
             </h2>
-            {bracketLoading && (
+            {bracketLoading && !displayBracket && (
               <div className="flex justify-center py-8">
                 <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
               </div>
             )}
-            {!bracketLoading && bracket && (
+            {displayBracket && (
               <div className="space-y-6">
-                {bracket.rounds.map((r: BracketRound) => {
+                {displayBracket.rounds.map((r: BracketRound) => {
                   const scheduledAt = r.scheduled_start_at
                     ? new Date(r.scheduled_start_at).toLocaleString(undefined, {
                         weekday: "short",
@@ -436,7 +470,7 @@ export default function TournamentDetailPage() {
                             m.slot_b_entry_id &&
                             !m.winner_entry_id;
                           const canCreateGame = needsGameCreated && isCreator;
-                          const gameCodeForMatch = `T${id}-R${r.round_index}-M${m.match_index}`;
+                          const gameCodeForMatch = `T${id}-R${r.round_index}-M${m.match_index}`.toUpperCase();
                           return (
                             <div
                               key={m.id}

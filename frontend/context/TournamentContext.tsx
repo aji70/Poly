@@ -148,6 +148,7 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
   const fetchTournament = useCallback(async (id: string) => {
     setDetailLoading(true);
     setDetailError(null);
+    setBracket(null);
     try {
       const res = await apiClient.get<TournamentDetail>(`${TOURNAMENTS_BASE}/${id}`);
       setTournament(res?.data ?? null);
@@ -178,7 +179,8 @@ export function TournamentProvider({ children }: { children: ReactNode }) {
     setBracketError(null);
     try {
       const res = await apiClient.get<Bracket>(`${TOURNAMENTS_BASE}/${id}/bracket`);
-      setBracket(res?.data ?? null);
+      const data = res?.data;
+      setBracket(data && typeof data === "object" && "rounds" in data ? data : null);
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { message?: string } }; message?: string })?.response
