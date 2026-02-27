@@ -470,7 +470,8 @@ export default function TournamentDetailPage() {
                             m.slot_b_entry_id &&
                             !m.winner_entry_id;
                           const canCreateGame = needsGameCreated && isCreator;
-                          const gameCodeForMatch = `T${id}-R${r.round_index}-M${m.match_index}`.toUpperCase();
+                          // Use numeric tournament.id so game code matches backend (e.g. T24-R0-M0), not URL slug (e.g. 9OJXTLE4)
+                          const gameCodeForMatch = `T${tournament?.id ?? id}-R${r.round_index}-M${m.match_index}`.toUpperCase();
                           return (
                             <div
                               key={m.id}
