@@ -494,11 +494,11 @@ export default function TournamentDetailPage() {
                                 <div className="flex justify-end">
                                   {hasGameForBoard ? (
                                     <Link
-                                      href={`/game-play?gameCode=${encodeURIComponent(gameCodeForMatch)}`}
+                                      href={`/game-waiting?gameCode=${encodeURIComponent(gameCodeForMatch)}`}
                                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 transition-colors"
                                     >
                                       <Play className="w-4 h-4" />
-                                      Go to board
+                                      Go to lobby
                                     </Link>
                                   ) : showStartNow ? (
                                     <button
