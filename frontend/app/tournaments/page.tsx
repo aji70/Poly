@@ -76,8 +76,8 @@ export default function TournamentsPage() {
   }, [fetchTournaments]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white">
-      <header className="sticky top-0 z-50 flex items-center justify-between gap-4 px-4 py-4 md:px-8 border-b border-white/10 bg-[#010F10]/90 backdrop-blur-md">
+    <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white pt-[80px] md:pt-0">
+      <header className="sticky top-0 z-40 flex items-center justify-between gap-4 px-4 py-4 pr-20 md:pr-8 md:px-8 border-b border-white/10 bg-[#010F10]/90 backdrop-blur-md">
         <Link
           href="/"
           className="flex items-center gap-2 text-cyan-400 hover:text-cyan-300 font-semibold text-sm transition-colors"
@@ -91,13 +91,13 @@ export default function TournamentsPage() {
         </h1>
         <Link
           href="/tournaments/create"
-          className="px-4 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-sm font-medium hover:bg-cyan-500/30 transition"
+          className="px-4 py-2 rounded-xl bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 text-sm font-medium hover:bg-cyan-500/30 transition shrink-0"
         >
           Create
         </Link>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-6 md:py-8">
+      <main className="max-w-3xl mx-auto px-4 py-6 md:py-8 pb-24 md:pb-8">
         {listLoading && (
           <div className="flex justify-center py-12">
             <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />

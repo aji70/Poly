@@ -183,8 +183,8 @@ export default function CreateTournamentPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white">
-      <header className="sticky top-0 z-50 flex items-center gap-4 px-4 py-4 md:px-8 border-b border-white/10 bg-[#010F10]/90 backdrop-blur-md">
+    <div className="min-h-screen bg-gradient-to-b from-[#010F10] to-[#0E1415] text-white pt-[80px] md:pt-0">
+      <header className="sticky top-0 z-40 flex items-center gap-4 px-4 py-4 pr-20 md:pr-8 md:px-8 border-b border-white/10 bg-[#010F10]/90 backdrop-blur-md">
         <Link
           href="/tournaments"
           className="flex items-center gap-2 text-cyan-400 hover:text-cyan-300 font-semibold text-sm"
@@ -198,7 +198,7 @@ export default function CreateTournamentPage() {
         </h1>
       </header>
 
-      <main className="max-w-xl mx-auto px-4 py-8">
+      <main className="max-w-xl mx-auto px-4 py-8 pb-24 md:pb-8">
         {authLoading && (
           <div className="rounded-2xl border border-[#0E282A] bg-[#011112]/80 p-8 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-cyan-400 mx-auto mb-3" />
