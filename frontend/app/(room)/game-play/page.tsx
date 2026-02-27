@@ -45,7 +45,9 @@ export default function GamePlayPage() {
 
   useEffect(() => {
     const code = searchParams.get("gameCode") || localStorage.getItem("gameCode");
-    if (code && code.length === 6) setGameCode(code);
+    const trimmed = typeof code === "string" ? code.trim() : "";
+    // Accept standard 6-char codes and tournament codes (e.g. T7-R0-M0)
+    if (trimmed) setGameCode(trimmed.toUpperCase());
   }, [searchParams]);
 
   const {
