@@ -134,7 +134,12 @@ export default function TournamentDetailPage() {
 
   const { register: registerOnChain, isPending: isOnChainPending } = useRegisterForTournamentOnChain();
 
-  const isCreator = tournament && guestUser && tournament.creator_id === guestUser.id;
+  const isCreator =
+    tournament &&
+    ((guestUser && tournament.creator_id === guestUser.id) ||
+      (walletAddress &&
+        tournament.creator_address &&
+        walletAddress.toLowerCase() === String(tournament.creator_address).toLowerCase()));
   const entryFeeWei = Number(tournament?.entry_fee_wei ?? 0);
   const isPaidTournament =
     tournament?.prize_source === "ENTRY_FEE_POOL" && entryFeeWei > 0;

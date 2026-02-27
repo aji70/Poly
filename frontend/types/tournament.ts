@@ -25,6 +25,8 @@ export interface Tournament {
   id: number;
   code?: string;
   creator_id: number;
+  /** Creator wallet address (for recognizing creator when using wallet without guest login). */
+  creator_address?: string | null;
   name: string;
   status: TournamentStatus;
   prize_source: PrizeSource;
