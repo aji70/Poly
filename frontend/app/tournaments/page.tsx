@@ -48,7 +48,7 @@ function TournamentCard({ t }: { t: TournamentType }) {
           <div className="flex flex-wrap gap-3 mt-3 text-sm text-white/60">
             <span className="flex items-center gap-1">
               <Users className="w-4 h-4" />
-              {t.max_players} max
+              {typeof t.participant_count === "number" ? `${t.participant_count} / ${t.max_players}` : `${t.max_players} max`}
             </span>
             <span className="flex items-center gap-1">
               <Trophy className="w-4 h-4" />

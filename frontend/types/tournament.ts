@@ -32,6 +32,8 @@ export interface Tournament {
   prize_source: PrizeSource;
   max_players: number;
   min_players: number;
+  /** Number of registered participants (included in list API). */
+  participant_count?: number;
   entry_fee_wei: string | number;
   prize_pool_wei: string | null;
   prize_distribution: Record<string, number> | null;
