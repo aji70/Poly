@@ -428,7 +428,7 @@ export default function TournamentDetailPage() {
                             !m.game_id &&
                             m.status !== "BYE" &&
                             isInMatch(m);
-                          const hasPlayAction = !!m.game_id;
+                          const hasGameForBoard = !!m.game_id;
                           const needsGameCreated =
                             !m.game_id &&
                             m.status !== "BYE" &&
@@ -436,6 +436,7 @@ export default function TournamentDetailPage() {
                             m.slot_b_entry_id &&
                             !m.winner_entry_id;
                           const canCreateGame = needsGameCreated && isCreator;
+                          const gameCodeForMatch = `T${id}-R${r.round_index}-M${m.match_index}`;
                           return (
                             <div
                               key={m.id}
@@ -455,11 +456,11 @@ export default function TournamentDetailPage() {
                                   </span>
                                 )}
                               </div>
-                              {(hasPlayAction || showStartNow || canCreateGame) && (
+                              {(hasGameForBoard || showStartNow || canCreateGame || needsGameCreated) && (
                                 <div className="flex justify-end">
-                                  {m.game_id ? (
+                                  {hasGameForBoard ? (
                                     <Link
-                                      href={`/game-waiting?gameCode=T${id}-R${r.round_index}-M${m.match_index}`}
+                                      href={`/game-play?gameCode=${encodeURIComponent(gameCodeForMatch)}`}
                                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-cyan-500/25 border border-cyan-500/60 text-cyan-300 font-medium hover:bg-cyan-500/35 transition-colors"
                                     >
                                       <Play className="w-4 h-4" />
