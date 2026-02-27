@@ -167,7 +167,7 @@ export default function TournamentDetailPage() {
     const entryFeeWei = Math.max(0, Math.floor(Number(tournament.entry_fee_wei) || 0));
     const isPaid = tournament.prize_source === "ENTRY_FEE_POOL" && entryFeeWei > 0;
 
-    // Paid tournaments require wallet for on-chain payment
+    // Paid tournaments require wallet for on-chain payment (contract registerForTournament)
     if (isPaid && !walletAddress) {
       setActionError("Connect your wallet to pay the entry fee");
       return;
@@ -179,8 +179,8 @@ export default function TournamentDetailPage() {
     try {
       let registrationTxHash: string | null = null;
 
-      // On-chain registration: wallet users (free and paid). Use tournament.id (numeric) for contract.
-      if (walletAddress) {
+      // On-chain: only for PAID tournaments (contract registerForTournament). Free tournaments use backend registerForTournamentFor.
+      if (walletAddress && isPaid) {
         const hash = await registerOnChain(tournament.id, entryFeeWei);
         if (!hash) {
           setActionError("On-chain registration failed");
@@ -188,7 +188,6 @@ export default function TournamentDetailPage() {
         }
         registrationTxHash = hash;
       }
-      // Guest + free: backend-only (no on-chain call)
 
       const res = await registerForTournament(id, {
         address: (walletAddress ?? guestUser?.address) ?? undefined,
