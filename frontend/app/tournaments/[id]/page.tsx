@@ -166,6 +166,23 @@ export default function TournamentDetailPage() {
     }
   }, [id, tournament?.id, tournament?.status, fetchBracket, fetchLeaderboard]);
 
+  // Poll bracket so the other player sees "Go to board" when the game is created (e.g. after both click "Start now")
+  useEffect(() => {
+    if (
+      !id ||
+      !tournament ||
+      tournament.id !== Number(id) ||
+      (tournament.status !== "BRACKET_LOCKED" && tournament.status !== "IN_PROGRESS")
+    ) {
+      return;
+    }
+    const interval = setInterval(() => {
+      fetchBracket(id);
+      fetchLeaderboard(id, "live");
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [id, tournament?.id, tournament?.status, fetchBracket, fetchLeaderboard]);
+
   const handleRegister = async () => {
     if (!id || !canRegister || !tournament) return;
 
