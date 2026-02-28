@@ -113,7 +113,7 @@ const HeroSectionMobile: React.FC = () => {
 
     const fetchUser = async () => {
       try {
-        const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Polygon`);
+        const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Celo`);
 
         if (!isActive) return;
 
@@ -183,7 +183,7 @@ const HeroSectionMobile: React.FC = () => {
         const res = await apiClient.post<ApiResponse>("/users", {
           username: finalUsername,
           address,
-          chain: "Polygon",
+          chain: "Celo",
         });
 
         if (!res?.success) throw new Error("Failed to save user on backend");
@@ -220,7 +220,7 @@ const HeroSectionMobile: React.FC = () => {
 
       if (isAlreadyExists) {
         try {
-          const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Polygon`);
+          const res = await apiClient.get<ApiResponse>(`/users/by-address/${address}?chain=Celo`);
           if (res?.success && res?.data) {
             setUser(res.data as UserType);
             setLocalRegistered(true);

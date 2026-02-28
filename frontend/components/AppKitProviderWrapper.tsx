@@ -34,7 +34,7 @@ export default function AppKitProviderWrapper({
         metadata: {
           name: 'Tycoon',
           description: 'Play Monopoly onchain',
-          url: 'http://localhost:3000', // Update to your deployed URL
+          url: process.env.NEXT_PUBLIC_URL || 'https://www.playtycoon.xyz',
           icons: ['https://avatars.githubusercontent.com/u/37784886'], // Replace with your logo
         },
       });

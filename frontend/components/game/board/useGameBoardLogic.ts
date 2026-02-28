@@ -22,6 +22,7 @@ import {
   MONOPOLY_STATS,
 } from "../constants";
 import { usePropertyActions } from "@/hooks/usePropertyActions";
+import { usePreventDoubleSubmit } from "@/hooks/usePreventDoubleSubmit";
 import { getContractErrorMessage } from "@/lib/utils/contractErrors";
 
 /** Convert dice total (2–12) to die1+die2 for display when we only have the total (e.g. opponent's roll from API). */
@@ -90,11 +91,16 @@ export function useGameBoardLogic({
   const landedPositionThisTurn = useRef<number | null>(null);
   const [landedPosition, setLandedPosition] = useState<number | null>(null);
   const turnEndInProgress = useRef(false);
+  const buyGuard = usePreventDoubleSubmit();
+  const jailGuard = usePreventDoubleSubmit();
+  const voteEndByNetWorthGuard = usePreventDoubleSubmit();
   const lastToastMessage = useRef<string | null>(null);
   const recordTimeoutCalledForTurn = useRef<number | null>(null);
   const timeLeftFrozenAtRollRef = useRef<number | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
   const prevHistoryLength = useRef(game?.history?.length ?? 0);
+  /** Top history id we've seen; used to only show card modal when a NEW card is drawn (not on load/return). */
+  const lastTopHistoryIdRef = useRef<number | null>(null);
 
   const INACTIVITY_SECONDS = 30;
   const TURN_TOTAL_SECONDS = 120;
@@ -162,65 +168,49 @@ export function useGameBoardLogic({
     lastActivityRef.current = Date.now();
   }, [currentPlayerId]);
 
-  // When any player lands on Chance/CC, show transparent card popup for everyone
-  // COMMENTED OUT: Card modal disabled
-  // useEffect(() => {
-  //   const history = game?.history ?? [];
-  //   if (history.length <= prevHistoryLength.current) return;
+  // When a NEW card is drawn (history grows), show card modal. Don't show on initial load or when returning to the page.
+  useEffect(() => {
+    const history = game?.history ?? [];
+    if (history.length === 0) return;
 
-  //   // API returns history newest first (created_at desc)
-  //   // Check the new entries (recent additions) to find card draws
-  //   const newEntries = history.slice(0, history.length - prevHistoryLength.current);
-  //   prevHistoryLength.current = history.length;
+    const first = typeof history[0] === "object" && history[0] !== null ? history[0] as { id?: number; comment?: string; player_name?: string } : null;
+    const topId = first?.id ?? 0;
 
-  //   // Search through new entries to find a card draw
-  //   for (const newEntry of newEntries) {
-  //     const comment =
-  //       typeof newEntry === "string"
-  //         ? newEntry
-  //         : (newEntry as { comment?: string })?.comment ?? "";
-  //     const playerName =
-  //       typeof newEntry === "object" && newEntry !== null && "player_name" in newEntry
-  //         ? String((newEntry as { player_name?: string }).player_name ?? "Player")
-  //         : "";
+    if (lastTopHistoryIdRef.current === null) {
+      lastTopHistoryIdRef.current = topId;
+      return;
+    }
+    if (topId === lastTopHistoryIdRef.current) return;
 
-  //     // Match patterns like "drew chance: ..." or "PlayerName drew Chance: ..."
-  //     // The backend format is: "drew chance: [card instruction]" or "drew community chest: [card instruction]"
-  //     // Capture everything after the colon - the card instruction text
-  //     const cardRegex = /drew\s+(chance|community\s+chest):\s*(.+)/i;
-  //     const match = comment.match(cardRegex);
-      
-  //     if (!match || !match[2]) continue; // Not a card entry or no text, check next
+    lastTopHistoryIdRef.current = topId;
+    if (!first?.comment) return;
 
-  //     const [, typeStr, text] = match;
-  //     // Remove any trailing "[Rolled X]" or similar patterns, but keep the card text
-  //     const cardText = text.replace(/\s*\[Rolled\s+\d+\].*$/i, "").trim();
-  //     if (!cardText) continue; // Empty card text, skip
-      
-  //     const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
+    const cardRegex = /drew\s+(chance|community\s+chest):\s*(.+)/i;
+    const match = first.comment.match(cardRegex);
+    if (!match || !match[2]) return;
 
-  //     const lowerText = cardText.toLowerCase();
-  //     const isGood =
-  //       lowerText.includes("collect") ||
-  //       lowerText.includes("receive") ||
-  //       lowerText.includes("advance") ||
-  //       lowerText.includes("get out of jail") ||
-  //       lowerText.includes("matures") ||
-  //       lowerText.includes("refund") ||
-  //       lowerText.includes("prize") ||
-  //       lowerText.includes("inherit");
+    const [, typeStr, text] = match;
+    const cardText = text.replace(/\s*\[Rolled\s+\d+\].*$/i, "").trim();
+    if (!cardText) return;
 
-  //     const effectMatch = cardText.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
-  //     const effect = effectMatch ? effectMatch[0] : undefined;
+    const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
+    const lowerText = cardText.toLowerCase();
+    const isGood =
+      lowerText.includes("collect") ||
+      lowerText.includes("receive") ||
+      lowerText.includes("advance") ||
+      lowerText.includes("get out of jail") ||
+      lowerText.includes("matures") ||
+      lowerText.includes("refund") ||
+      lowerText.includes("prize") ||
+      lowerText.includes("inherit");
+    const effectMatch = cardText.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
+    const effect = effectMatch ? effectMatch[0] : undefined;
 
-  //     setCardData({ type, text: cardText, effect, isGood });
-  //     setCardPlayerName(playerName.trim() || "Player");
-  //     setShowCardModal(true);
-
-  //     const timer = setTimeout(() => setShowCardModal(false), 15000);
-  //     return () => clearTimeout(timer);
-  //   }
-  // }, [game?.history]);
+    setCardData({ type, text: cardText, effect, isGood });
+    setCardPlayerName(String(first.player_name ?? "").trim() || "Player");
+    setShowCardModal(true);
+  }, [game?.history]);
 
   const touchActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
@@ -1006,7 +996,8 @@ export function useGameBoardLogic({
     developmentStage,
     isPropertyMortgaged,
     handleRollDice: () => ROLL_DICE(),
-    handleBuyProperty: () => BUY_PROPERTY(),
+    handleBuyProperty: () => buyGuard.submit(() => BUY_PROPERTY()),
+    buyPending: buyGuard.isSubmitting,
     handleSkipBuy,
     handleBankruptcy,
     handleDevelopment,
@@ -1028,8 +1019,9 @@ export function useGameBoardLogic({
     fetchVoteStatus,
     isUntimed,
     endByNetWorthStatus,
-    voteEndByNetWorth,
+    voteEndByNetWorth: () => voteEndByNetWorthGuard.submit(() => voteEndByNetWorth()),
     endByNetWorthLoading,
+    voteEndByNetWorthSubmitting: voteEndByNetWorthGuard.isSubmitting,
     turnEndScheduled,
     touchActivity,
     timeoutPopupPlayer,
@@ -1043,8 +1035,9 @@ export function useGameBoardLogic({
     canPayToLeaveJail,
     hasChanceJailCard,
     hasCommunityChestJailCard,
-    payToLeaveJail,
-    useGetOutOfJailFree,
-    stayInJail,
+    payToLeaveJail: () => jailGuard.submit(() => payToLeaveJail()),
+    useGetOutOfJailFree: (cardType: "chance" | "community_chest") => jailGuard.submit(() => useGetOutOfJailFree(cardType)),
+    stayInJail: () => jailGuard.submit(() => stayInJail()),
+    jailSubmitting: jailGuard.isSubmitting,
   };
 }

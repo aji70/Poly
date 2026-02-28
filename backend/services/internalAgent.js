@@ -8,7 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 const MODEL = process.env.INTERNAL_AGENT_MODEL || "claude-sonnet-4-20250514";
-const MAX_TOKENS = 1024;
+const MAX_TOKENS = Number(process.env.INTERNAL_AGENT_MAX_TOKENS) || 256;
 const REQUEST_TIMEOUT_MS = Number(process.env.INTERNAL_AGENT_TIMEOUT_MS) || 15000;
 
 let client = null;
@@ -49,102 +49,56 @@ function getMonopolies(properties) {
 
 function buildPropertyPrompt(context) {
   const { landedProperty = {}, myBalance = 0, myProperties = [], opponents = [] } = context;
-  return `You're an expert Monopoly AI player. Decide whether to buy this property.
-
-LANDED ON: ${landedProperty.name ?? "Unknown"}
-- Price: $${landedProperty.price ?? 0}
-- Color: ${landedProperty.color ?? "—"}
-- Landing frequency rank: #${landedProperty.landingRank ?? "?"} (lower = better, top 10 is excellent)
-- Would complete monopoly: ${landedProperty.completesMonopoly ? "YES" : "No"}
-
-YOUR STATUS:
-- Current balance: $${myBalance}
-- After purchase: $${myBalance - (landedProperty.price || 0)}
-- Properties owned: ${(myProperties || []).length}
-- Complete monopolies: ${getMonopolies(myProperties || []).length}
-
-OPPONENTS:
-${(opponents || []).map((o) => `- ${o.username ?? "Opponent"}: $${o.balance ?? 0}`).join("\n")}
-
-MONOPOLY STRATEGY RULES:
-1. Orange/Red/Yellow groups = highest ROI (most landed on)
-2. Completing monopolies is CRITICAL - worth overpaying
-3. Keep $500+ cash reserve minimum
-4. Properties with landing rank <10 are excellent investments
-5. Railroads are consistent income but low priority
-6. Dark blue is expensive but low traffic
-
-Respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "action": "buy" | "skip",
-  "reasoning": "tactical explanation in max 60 words",
-  "confidence": 85
-}`;
+  const monopolies = getMonopolies(myProperties || []);
+  const opps = (opponents || []).map((o) => `${o.username ?? "Opp"}: $${o.balance ?? 0}`).join("; ");
+  return `Monopoly: buy or skip? Property: ${landedProperty.name ?? "?"} $${landedProperty.price ?? 0} ${landedProperty.color ?? ""}. Rank #${landedProperty.landingRank ?? "?"} (lower=better). Completes monopoly: ${landedProperty.completesMonopoly ? "Y" : "N"}. Your balance: $${myBalance} (after: $${myBalance - (landedProperty.price || 0)}). Own ${(myProperties || []).length} props, ${monopolies.length} monopolies. Opponents: ${opps}. Rules: orange/red/yellow best; complete monopolies critical; keep $500+; rank <10 good; railroads low priority. JSON only: {"action":"buy"|"skip","reasoning":"brief reason","confidence":85}`;
 }
 
 function buildTradePrompt(context) {
   const trade = context.tradeOffer || {};
   const { myBalance = 0, myProperties = [], opponents = [] } = context;
-  return `Evaluate this Monopoly trade offer.
-
-RECEIVING:
-- Cash: $${trade.offer_amount ?? 0}
-- Properties: ${(trade.offer_properties || []).map((id) => id).join(", ") || "None"}
-
-GIVING:
-- Cash: $${trade.requested_amount ?? 0}
-- Properties: ${(trade.requested_properties || []).map((id) => id).join(", ") || "None"}
-
-YOUR STATUS:
-- Balance: $${myBalance}
-- Properties: ${(myProperties || []).map((p) => p.name ?? p.id).join(", ") || "None"}
-- Monopolies: ${getMonopolies(myProperties || []).join(", ") || "None"}
-
-ANALYSIS:
-- Does this complete a monopoly for me? (HUGE value)
-- Does this complete a monopoly for them? (Risky)
-- Is the cash fair?
-- Am I weakening my position?
-
-Respond ONLY with JSON:
-{
-  "action": "accept" | "decline" | "counter",
-  "reasoning": "max 60 words",
-  "confidence": 85
-}`;
+  const monopolies = getMonopolies(myProperties || []).join(", ") || "None";
+  return `Monopoly trade. Receive: $${trade.offer_amount ?? 0}, props ${(trade.offer_properties || []).join(",") || "none"}. Give: $${trade.requested_amount ?? 0}, props ${(trade.requested_properties || []).join(",") || "none"}. Balance: $${myBalance}. My monopolies: ${monopolies}. Does it complete my monopoly? Theirs? Fair? JSON only: {"action":"accept"|"decline"|"counter","reasoning":"brief","confidence":85}`;
 }
 
 function buildBuildingPrompt(context) {
   const { myBalance = 0, myProperties = [], opponents = [] } = context;
-  return `You're playing Monopoly. Analyze whether to build houses/hotels now.
+  const monos = getMonopolies(myProperties || []).join(", ") || "None";
+  const props = (myProperties || []).map((p) => `${p.name ?? p.id}:${p.development ?? 0}`).join("; ");
+  return `Monopoly: build now? Balance: $${myBalance}. Properties: ${props}. Monopolies: ${monos}. Keep $500+; build on orange/red/yellow; 3 houses optimal. JSON only: {"action":"build"|"wait","propertyId":<id or null>,"reasoning":"brief"}`;
+}
 
-YOUR STATUS:
-- Balance: $${myBalance}
-- Properties: ${(myProperties || []).map((p) => `${p.name ?? p.id} (${p.development ?? 0} houses)`).join(", ")}
-- Monopolies: ${getMonopolies(myProperties || []).join(", ") || "None"}
+function buildStrategyPrompt(context) {
+  const {
+    myBalance = 0,
+    myProperties = [],
+    opponents = [],
+    inDebt = false,
+    hasMonopoly = false,
+    canUnmortgage = false,
+    canBuild = false,
+    canSendTrade = false,
+  } = context || {};
+  const monopolies = getMonopolies(myProperties || []).join(", ") || "None";
+  const opps = (opponents || []).map((o) => `${o.username ?? "Opp"}: $${o.balance ?? 0}`).join("; ");
+  return `Monopoly pre-roll. Pick ONE: liquidate|unmortgage|build|proposeTrade|roll. Balance: $${myBalance}. Debt: ${inDebt ? "Y" : "N"}. Monopolies: ${monopolies}. Can unmortgage: ${canUnmortgage}. Can build: ${canBuild}. Trade opportunity: ${canSendTrade}. Opponents: ${opps}. JSON only: {"action":"...","reasoning":"brief"}`;
+}
 
-OPPONENTS:
-${(opponents || []).map((o) => `- ${o.username ?? "Opponent"}: $${o.balance ?? 0}`).join("\n")}
-
-STRATEGY:
-- Build on monopolies with high traffic (orange, red, yellow)
-- Keep $500+ cash reserve for safety
-- Build evenly (3 houses per property is optimal)
-- Hotels only when cash flow is secure
-
-Respond ONLY with JSON:
-{
-  "action": "build" | "wait",
-  "propertyId": 16,
-  "reasoning": "brief explanation"
-}`;
+function buildTipPrompt(context) {
+  const { myBalance = 0, myProperties = [], opponents = [], situation = "buy_property", property: landedProperty = {} } = context;
+  const monopolies = getMonopolies(myProperties || []);
+  if (situation === "buy_property" && landedProperty && Object.keys(landedProperty).length > 0) {
+    const opps = (opponents || []).map((o) => `${o.username ?? "Opp"}: $${o.balance ?? 0}`).join("; ");
+    return `Human landed on ${landedProperty.name ?? "?"} $${landedProperty.price ?? 0}. Completes monopoly: ${landedProperty.completesMonopoly ? "Y" : "N"}. Rank #${landedProperty.landingRank ?? "?"}. Their balance: $${myBalance}. Monopolies: ${monopolies.join(", ") || "None"}. Opponents: ${opps}. One short tactical tip (1-2 sentences), don't say buy/skip outright. JSON only: {"action":"ok","reasoning":"tip text"}`;
+  }
+  return `Human Monopoly turn. Balance: $${myBalance}. Monopolies: ${monopolies.join(", ") || "None"}. One short encouraging tip. JSON only: {"action":"ok","reasoning":"tip"}`;
 }
 
 /**
  * Get a decision from the internal LLM agent.
  * @param {number} gameId
  * @param {number} slot
- * @param {string} decisionType - "property" | "trade" | "building" | "strategy"
+ * @param {string} decisionType - "property" | "trade" | "building" | "strategy" | "tip"
  * @param {object} context - game context (myBalance, myProperties, opponents, landedProperty, tradeOffer, gameState, etc.)
  * @returns {Promise<{ action: string, propertyId?: number, reasoning?: string, confidence?: number } | null>}
  */
@@ -172,22 +126,27 @@ async function getDecision(gameId, slot, decisionType, context) {
       fallback = { action: "wait", reasoning: "No API", confidence: 0 };
       break;
     case "strategy":
-      return { action: "wait", reasoning: "Strategy handled by turn flow.", confidence: 1 };
+      prompt = buildStrategyPrompt(context);
+      fallback = { action: "roll", reasoning: "No API", confidence: 0 };
+      break;
+    case "tip":
+      prompt = buildTipPrompt(context);
+      fallback = { action: "ok", reasoning: "Consider cash flow and completing color sets." };
+      break;
     default:
       return { action: "wait", reasoning: "Unknown type.", confidence: 0 };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
   try {
-    const message = await anthropic.messages.create({
+    const createPromise = anthropic.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       messages: [{ role: "user", content: prompt }],
-      signal: controller.signal,
     });
-    clearTimeout(timeout);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Request timeout")), REQUEST_TIMEOUT_MS)
+    );
+    const message = await Promise.race([createPromise, timeoutPromise]);
 
     const text =
       message.content &&
@@ -205,7 +164,6 @@ async function getDecision(gameId, slot, decisionType, context) {
     if (parsed.propertyId != null) out.propertyId = Number(parsed.propertyId);
     return out;
   } catch (err) {
-    clearTimeout(timeout);
     console.error("[internalAgent] LLM request failed:", err.message);
     return null;
   }

@@ -149,7 +149,7 @@ export default function MobileGamePlayers({
           showWrongNetworkClaimToast(() => openAppKit({ view: "Networks" }));
         } else {
           toast.error(
-            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Polygon).",
+            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Celo).",
             { id: toastId, duration: 8000 }
           );
         }

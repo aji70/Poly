@@ -48,6 +48,15 @@ type CenterAreaProps = {
   endByNetWorthLoading?: boolean;
   onVoteEndByNetWorth?: () => void;
   me?: { user_id?: number } | null;
+  /** AI tips for human player (toggle + tip text when buy prompt is shown) */
+  aiTipsOn?: boolean;
+  onToggleAiTips?: () => void;
+  aiTipText?: string | null;
+  aiTipLoading?: boolean;
+  /** Prevent double-tap on buy/skip (backend call in progress) */
+  buyPending?: boolean;
+  /** Prevent double-tap on jail actions (pay/use card/stay) */
+  jailSubmitting?: boolean;
 };
 
 export default function CenterArea({
@@ -83,6 +92,12 @@ export default function CenterArea({
   endByNetWorthLoading = false,
   onVoteEndByNetWorth,
   me,
+  aiTipsOn = false,
+  onToggleAiTips,
+  aiTipText = null,
+  aiTipLoading = false,
+  buyPending = false,
+  jailSubmitting = false,
 }: CenterAreaProps) {
   const [showEndByNetWorthConfirm, setShowEndByNetWorthConfirm] = useState(false);
 
@@ -153,24 +168,24 @@ export default function CenterArea({
             {onPayToLeaveJail && (
               <button
                 onClick={onPayToLeaveJail}
-                disabled={!canPayToLeaveJail}
-                className={`px-4 py-2 rounded-lg font-medium border ${canPayToLeaveJail ? "bg-amber-600/80 text-white border-amber-500" : "bg-gray-600 text-gray-400 border-gray-500"}`}
+                disabled={!canPayToLeaveJail || jailSubmitting}
+                className={`px-4 py-2 rounded-lg font-medium border ${canPayToLeaveJail && !jailSubmitting ? "bg-amber-600/80 text-white border-amber-500" : "bg-gray-600 text-gray-400 border-gray-500"}`}
               >
-                Pay $50
+                {jailSubmitting ? "…" : "Pay $50"}
               </button>
             )}
             {onUseGetOutOfJailFree && hasChanceJailCard && (
-              <button onClick={() => onUseGetOutOfJailFree("chance")} className="px-4 py-2 rounded-lg font-medium bg-orange-600/80 text-white border border-orange-500">
+              <button onClick={() => onUseGetOutOfJailFree("chance")} disabled={jailSubmitting} className="px-4 py-2 rounded-lg font-medium bg-orange-600/80 text-white border border-orange-500 disabled:opacity-60">
                 Use Chance Card
               </button>
             )}
             {onUseGetOutOfJailFree && hasCommunityChestJailCard && (
-              <button onClick={() => onUseGetOutOfJailFree("community_chest")} className="px-4 py-2 rounded-lg font-medium bg-blue-600/80 text-white border border-blue-500">
+              <button onClick={() => onUseGetOutOfJailFree("community_chest")} disabled={jailSubmitting} className="px-4 py-2 rounded-lg font-medium bg-blue-600/80 text-white border border-blue-500 disabled:opacity-60">
                 Use Community Chest Card
               </button>
             )}
             {onStayInJail && (
-              <button onClick={onStayInJail} className="px-4 py-2 rounded-lg font-medium bg-gray-600 text-white border border-gray-500">
+              <button onClick={onStayInJail} disabled={jailSubmitting} className="px-4 py-2 rounded-lg font-medium bg-gray-600 text-white border border-gray-500 disabled:opacity-60">
                 Stay in Jail
               </button>
             )}
@@ -184,19 +199,19 @@ export default function CenterArea({
           {onPayToLeaveJail && (
             <button
               onClick={onPayToLeaveJail}
-              disabled={!canPayToLeaveJail}
-              className={`px-4 py-2 rounded-lg font-medium border ${canPayToLeaveJail ? "bg-amber-600/80 text-white border-amber-500" : "bg-gray-600 text-gray-400 border-gray-500"}`}
+              disabled={!canPayToLeaveJail || jailSubmitting}
+              className={`px-4 py-2 rounded-lg font-medium border ${canPayToLeaveJail && !jailSubmitting ? "bg-amber-600/80 text-white border-amber-500" : "bg-gray-600 text-gray-400 border-gray-500"}`}
             >
-              Pay $50
+              {jailSubmitting ? "…" : "Pay $50"}
             </button>
           )}
           {onUseGetOutOfJailFree && hasChanceJailCard && (
-            <button onClick={() => onUseGetOutOfJailFree("chance")} className="px-4 py-2 rounded-lg font-medium bg-orange-600/80 text-white border border-orange-500">
+            <button onClick={() => onUseGetOutOfJailFree("chance")} disabled={jailSubmitting} className="px-4 py-2 rounded-lg font-medium bg-orange-600/80 text-white border border-orange-500 disabled:opacity-60">
               Chance Card
             </button>
           )}
           {onUseGetOutOfJailFree && hasCommunityChestJailCard && (
-            <button onClick={() => onUseGetOutOfJailFree("community_chest")} className="px-4 py-2 rounded-lg font-medium bg-blue-600/80 text-white border border-blue-500">
+            <button onClick={() => onUseGetOutOfJailFree("community_chest")} disabled={jailSubmitting} className="px-4 py-2 rounded-lg font-medium bg-blue-600/80 text-white border border-blue-500 disabled:opacity-60">
               CC Card
             </button>
           )}
@@ -279,26 +294,62 @@ export default function CenterArea({
         )
       )}
 
-      {/* Buy Property Prompt */}
-      {isMyTurn && buyPrompted && currentProperty && (
-        <div className="flex gap-4 flex-wrap justify-center mt-4">
+      {/* AI Tips toggle — when it's human's turn in an AI game */}
+      {isMyTurn && onToggleAiTips && (
+        <label className="flex items-center gap-2 mt-2 z-10 cursor-pointer select-none">
+          <span className="text-sm text-cyan-200/90">AI tips</span>
           <button
-            onClick={onBuyProperty}
-            disabled={currentProperty.price != null && currentPlayerBalance < currentProperty.price}
-            className={`px-6 py-3 bg-gradient-to-r from-cyan-500 to-cyan-600 text-white font-bold rounded-full hover:from-cyan-600 hover:to-cyan-700 transform hover:scale-110 active:scale-95 transition-all shadow-lg ${
-              currentProperty.price != null && currentPlayerBalance < currentProperty.price
-                ? "opacity-50 cursor-not-allowed"
-                : ""
+            type="button"
+            role="switch"
+            aria-checked={aiTipsOn}
+            onClick={onToggleAiTips}
+            className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-cyan-400/50 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-400/50 ${
+              aiTipsOn ? "bg-cyan-500" : "bg-gray-700"
             }`}
           >
-            Buy for ${currentProperty.price}
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform ${
+                aiTipsOn ? "translate-x-5" : "translate-x-1"
+              }`}
+              style={{ marginTop: "2px" }}
+            />
           </button>
-          <button
-            onClick={onSkipBuy}
-            className="px-6 py-3 bg-gray-600 text-white font-bold rounded-full hover:bg-gray-700 transform hover:scale-105 active:scale-95 transition-all shadow-lg"
-          >
-            Skip
-          </button>
+        </label>
+      )}
+
+      {/* Buy Property Prompt */}
+      {isMyTurn && buyPrompted && currentProperty && (
+        <div className="flex flex-col gap-3 items-center mt-4">
+          <div className="flex gap-4 flex-wrap justify-center">
+            <button
+              onClick={onBuyProperty}
+              disabled={(currentProperty.price != null && currentPlayerBalance < currentProperty.price) || buyPending}
+              className={`px-6 py-3 bg-gradient-to-r from-cyan-500 to-cyan-600 text-white font-bold rounded-full hover:from-cyan-600 hover:to-cyan-700 transform hover:scale-110 active:scale-95 transition-all shadow-lg ${
+                (currentProperty.price != null && currentPlayerBalance < currentProperty.price) || buyPending
+                  ? "opacity-50 cursor-not-allowed"
+                  : ""
+              }`}
+            >
+              {buyPending ? "Buying…" : `Buy for $${currentProperty.price}`}
+            </button>
+            <button
+              onClick={onSkipBuy}
+              disabled={buyPending}
+              className="px-6 py-3 bg-gray-600 text-white font-bold rounded-full hover:bg-gray-700 transform hover:scale-105 active:scale-95 transition-all shadow-lg disabled:opacity-60"
+            >
+              Skip
+            </button>
+          </div>
+          {/* AI tip when tips are on */}
+          {aiTipsOn && (aiTipLoading || aiTipText) && (
+            <div className="max-w-md w-full rounded-xl bg-cyan-900/40 border border-cyan-400/40 px-4 py-3 text-left z-10">
+              {aiTipLoading ? (
+                <p className="text-cyan-200/80 text-sm italic">Getting tip…</p>
+              ) : aiTipText ? (
+                <p className="text-cyan-100 text-sm">💡 {aiTipText}</p>
+              ) : null}
+            </div>
+          )}
         </div>
       )}
 

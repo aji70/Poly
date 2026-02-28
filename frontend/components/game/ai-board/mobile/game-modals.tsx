@@ -137,6 +137,9 @@ const GameModals: React.FC<GameModalsProps> = ({
         isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!",
         { id: toastId, duration: 5000 }
       );
+      try {
+        await apiClient.post(`/games/${currentGame.id}/erc8004-feedback`);
+      } catch (_) {}
     } catch (err: any) {
       const msg = String(err?.message ?? "").toLowerCase();
       if ((msg.includes("isn't an ai game") || msg.includes("not an ai game")) && chainId !== POLYGON_CHAIN_ID) {
@@ -178,6 +181,9 @@ const GameModals: React.FC<GameModalsProps> = ({
         isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!",
         { id: toastId, duration: 5000 }
       );
+      try {
+        await apiClient.post(`/games/${currentGame.id}/erc8004-feedback`);
+      } catch (_) {}
       window.location.href = "/";
     } catch (err: any) {
       const msg = String(err?.message ?? "").toLowerCase();
@@ -194,7 +200,7 @@ const GameModals: React.FC<GameModalsProps> = ({
     } finally {
       reset();
     }
-  }, [winner?.user_id, me?.user_id, isGuest, endGame, onFinishGameByTime, reset, chainId, openAppKit]);
+  }, [winner?.user_id, me?.user_id, isGuest, currentGame?.id, endGame, onFinishGameByTime, reset, chainId, openAppKit]);
 
   return (
     <>
@@ -457,15 +463,13 @@ const GameModals: React.FC<GameModalsProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Card Modal - using CardModal component for consistent experience */}
-      {/* {showCardModal && cardData && (
-        <CardModal
-          isOpen={showCardModal}
-          onClose={() => setShowCardModal(false)}
-          card={cardData}
-          playerName={cardPlayerName}
-        />
-      )} */}
+      {/* Card Modal — Chance / Community Chest (visible to all) */}
+      <CardModal
+        isOpen={showCardModal}
+        onClose={() => setShowCardModal(false)}
+        card={cardData}
+        playerName={cardPlayerName}
+      />
 
       {/* Raised Funds Button */}
       {isRaisingFunds && (

@@ -1,9 +1,9 @@
 // lib/ai-agent/wallet-manager.ts
 // SERVER-ONLY: Use only in API routes or server modules. Do not import in client components.
-// AI_PLAYER_*_PRIVATE_KEY and POLYGON_RPC_URL must be server env vars (never NEXT_PUBLIC_*).
+// AI_PLAYER_*_PRIVATE_KEY and CELO_RPC_URL must be server env vars (never NEXT_PUBLIC_*).
 import { createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { polygon, polygonAmoy } from 'viem/chains';
+import { celo, celoAlfajores } from 'viem/chains';
 import { viem } from '@goat-sdk/wallet-viem';
 import { getOnChainTools } from '@goat-sdk/adapter-vercel-ai';
 
@@ -19,7 +19,7 @@ const AI_WALLETS = {
 
 export class AIWalletManager {
   private wallets: Map<number, any> = new Map();
-  private chain = process.env.NODE_ENV === 'production' ? polygon : polygonAmoy;
+  private chain = process.env.NODE_ENV === 'production' ? celo : celoAlfajores;
 
   constructor() {
     this.initializeWallets();
@@ -32,7 +32,7 @@ export class AIWalletManager {
       const account = privateKeyToAccount(privateKey as `0x${string}`);
       const walletClient = createWalletClient({
         account,
-        transport: http(process.env.POLYGON_RPC_URL),
+        transport: http(process.env.CELO_RPC_URL),
         chain: this.chain,
       });
 

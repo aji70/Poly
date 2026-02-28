@@ -34,6 +34,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, X, Crown, Trophy, Wallet, HeartHandshake } from "lucide-react";
 import { usePropertyActions } from "@/hooks/usePropertyActions";
 import { useGameTrades } from "@/hooks/useGameTrades";
+import { usePreventDoubleSubmit } from "@/hooks/usePreventDoubleSubmit";
 import TradeAlertPill from "../TradeAlertPill";
 import { GameDurationCountdown } from "../GameDurationCountdown";
 
@@ -47,7 +48,7 @@ function totalToDice(total: number): { die1: number; die2: number; total: number
 }
 import { MONOPOLY_STATS, BOARD_SQUARES, ROLL_ANIMATION_MS, MOVE_ANIMATION_MS_PER_SQUARE, JAIL_POSITION, getDiceValues, BUILD_PRIORITY } from "../constants";
 import { getContractErrorMessage } from "@/lib/utils/contractErrors";
-import { isAIPlayer } from "@/utils/gameUtils";
+import { isAIPlayer, getAiSlotFromPlayer } from "@/utils/gameUtils";
 
 const calculateBuyScore = (
   property: Property,
@@ -148,6 +149,30 @@ const AiBoard = ({
   const [isSpecialMove, setIsSpecialMove] = useState(false);
   const [showPerksModal, setShowPerksModal] = useState(false);
 
+  const AI_TIPS_STORAGE_KEY = "tycoon_ai_tips_on";
+  const [aiTipsOn, setAiTipsOn] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem(AI_TIPS_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [aiTipText, setAiTipText] = useState<string | null>(null);
+  const [aiTipLoading, setAiTipLoading] = useState(false);
+  const lastTipPropertyIdRef = useRef<number | null>(null);
+
+  const toggleAiTips = useCallback(() => {
+    setAiTipsOn((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AI_TIPS_STORAGE_KEY, String(next));
+      } catch {}
+      if (!next) setAiTipText(null);
+      return next;
+    });
+  }, []);
+
   const [showCardModal, setShowCardModal] = useState(false);
   const [cardData, setCardData] = useState<{
     type: "chance" | "community";
@@ -157,6 +182,8 @@ const AiBoard = ({
   } | null>(null);
   const [cardPlayerName, setCardPlayerName] = useState("");
   const prevHistoryLength = useRef(game.history?.length ?? 0);
+  /** Top history id we've seen; only show card modal when a NEW card is drawn (not on load/return). */
+  const lastTopHistoryIdRef = useRef<number | null>(null);
 
   const landedPositionThisTurn = useRef<number | null>(null);
   const turnEndInProgress = useRef(false);
@@ -247,7 +274,9 @@ const {
   BigInt(endGameCandidate.balance),
   endGameCandidate.winner ? (endGameCandidate.validWin !== false) : false
 );
-  
+
+  const buyGuard = usePreventDoubleSubmit();
+  const jailGuard = usePreventDoubleSubmit();
 
   const buyScore = useMemo(() => {
     if (!isAITurn || !buyPrompted || !currentPlayer || !justLandedProperty) return null;
@@ -313,7 +342,7 @@ const {
           showWrongNetworkClaimToast(() => openAppKit({ view: "Networks" }));
         } else {
           toast.error(
-            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Polygon)."
+            "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Celo)."
           );
         }
         return;
@@ -331,13 +360,18 @@ const {
         }
       }
       toast.success(isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!");
+      try {
+        await apiClient.post(`/games/${game.id}/erc8004-feedback`);
+      } catch (_) {
+        // Backend submits ERC-8004 feedback; best-effort, don't block user
+      }
       // Stay on modal; user chooses when to go home via "Go home" button
     } catch (err: any) {
       toast.error(getContractErrorMessage(err, "Something went wrong — try again later"));
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
+  }, [winner?.user_id, me?.user_id, game?.id, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
 
   const handleClaimAndGoHome = useCallback(async () => {
     setClaimAndLeaveInProgress(true);
@@ -350,7 +384,7 @@ const {
             showWrongNetworkClaimToast(() => openAppKit({ view: "Networks" }));
           } else {
             toast.error(
-              "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Polygon)."
+              "Could not claim: this game isn't an AI game on-chain. Make sure your wallet is on the same network you used when creating the game (e.g. Celo)."
             );
           }
           setClaimAndLeaveInProgress(false);
@@ -368,6 +402,11 @@ const {
         }
       }
       toast.success(isHumanWinner ? "Prize claimed! 🎉" : "Consolation collected — thanks for playing!");
+      try {
+        await apiClient.post(`/games/${game.id}/erc8004-feedback`);
+      } catch (_) {
+        // Backend submits ERC-8004 feedback; best-effort
+      }
       window.location.href = "/";
     } catch (err: any) {
       toast.error(getContractErrorMessage(err, "Something went wrong — try again later"));
@@ -375,7 +414,7 @@ const {
     } finally {
       endGameReset();
     }
-  }, [winner?.user_id, me?.user_id, isGuest, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
+  }, [winner?.user_id, me?.user_id, isGuest, game?.id, onFinishGameByTime, endGame, endGameReset, contractGame, chainId, openAppKit]);
 
   // Sync players
   useEffect(() => {
@@ -1135,87 +1174,214 @@ const endTurnAfterSpecialMove = useCallback(() => {
     showToast
   ]);
 
-  // COMMENTED OUT: Card modal disabled
-  // useEffect(() => {
-  //   const history = game.history ?? [];
-  //   if (history.length <= prevHistoryLength.current) return;
+  useEffect(() => {
+    if (!buyPrompted) {
+      setAiTipText(null);
+      lastTipPropertyIdRef.current = null;
+    }
+  }, [buyPrompted]);
 
-  //   // API returns history newest first (created_at desc)
-  //   // Check the new entries (recent additions) to find card draws
-  //   const newEntries = history.slice(0, history.length - prevHistoryLength.current);
-  //   prevHistoryLength.current = history.length;
+  useEffect(() => {
+    if (!aiTipsOn || !isMyTurn || !buyPrompted || !justLandedProperty || !currentPlayer || currentPlayer?.user_id !== me?.user_id) return;
+    const propId = justLandedProperty.id;
+    if (lastTipPropertyIdRef.current === propId) return;
+    lastTipPropertyIdRef.current = propId;
+    setAiTipLoading(true);
+    const groupIds = Object.values(MONOPOLY_STATS.colorGroups).find((ids) => ids.includes(justLandedProperty.id)) ?? [];
+    const ownedInGroup = groupIds.filter((id) =>
+      game_properties.some(
+        (gp) => gp.property_id === id && gp.address?.toLowerCase() === currentPlayer.address?.toLowerCase()
+      )
+    ).length;
+    const completesMonopoly = groupIds.length > 0 && ownedInGroup === groupIds.length - 1;
+    const landingRank = (MONOPOLY_STATS.landingRank as Record<number, number>)[justLandedProperty.id] ?? 99;
+    apiClient
+      .post<{ success?: boolean; data?: { reasoning?: string }; useBuiltIn?: boolean }>("/agent-registry/decision", {
+        gameId: game.id,
+        slot: 1,
+        decisionType: "tip",
+        context: {
+          myBalance: currentPlayer.balance ?? 0,
+          myProperties: game_properties
+            .filter((gp) => gp.address?.toLowerCase() === currentPlayer.address?.toLowerCase())
+            .map((gp) => ({ ...properties.find((p) => p.id === gp.property_id), ...gp })),
+          opponents: (game.players ?? []).filter((p) => p.user_id !== currentPlayer.user_id),
+          situation: "buy_property",
+          property: { ...justLandedProperty, completesMonopoly, landingRank },
+        },
+      })
+      .then((res) => {
+        const text = res?.data?.data?.reasoning ?? null;
+        if (text) setAiTipText(text);
+      })
+      .catch(() => setAiTipText(null))
+      .finally(() => setAiTipLoading(false));
+  }, [
+    aiTipsOn,
+    isMyTurn,
+    buyPrompted,
+    justLandedProperty,
+    currentPlayer,
+    me?.user_id,
+    game.id,
+    game.players,
+    game_properties,
+    properties,
+  ]);
 
-  //   // Search through new entries to find a card draw
-  //   for (const newEntry of newEntries) {
-  //     const comment =
-  //       typeof newEntry === "string"
-  //         ? newEntry
-  //         : (newEntry as { comment?: string } | null)?.comment ?? "";
-  //     const playerName =
-  //       typeof newEntry === "object" && newEntry !== null && "player_name" in newEntry
-  //         ? String((newEntry as { player_name?: string }).player_name ?? "Player")
-  //         : "";
+  // When a NEW card is drawn (history grows), show card modal. Don't show on initial load or when returning to the page.
+  useEffect(() => {
+    const history = game.history ?? [];
+    if (history.length === 0) return;
 
-  //     // Match patterns like "drew chance: ..." or "PlayerName drew Chance: ..."
-  //     // The backend format is: "drew chance: [card instruction]" or "drew community chest: [card instruction]"
-  //     // Capture everything after the colon - the card instruction text
-  //     const cardRegex = /drew\s+(chance|community\s+chest):\s*(.+)/i;
-  //     const match = comment.match(cardRegex);
-      
-  //     if (!match || !match[2]) continue; // Not a card entry or no text, check next
+    const first = typeof history[0] === "object" && history[0] !== null ? history[0] as { id?: number; comment?: string; player_name?: string } : null;
+    const topId = first?.id ?? 0;
 
-  //     const [, typeStr, text] = match;
-  //     // Remove any trailing "[Rolled X]" or similar patterns, but keep the card text
-  //     const cardText = text.replace(/\s*\[Rolled\s+\d+\].*$/i, "").trim();
-  //     if (!cardText) continue; // Empty card text, skip
-      
-  //     const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
-  //     const displayName = playerName.trim() || "Player";
+    if (lastTopHistoryIdRef.current === null) {
+      lastTopHistoryIdRef.current = topId;
+      return;
+    }
+    if (topId === lastTopHistoryIdRef.current) return;
 
-  //     const lowerText = cardText.toLowerCase();
-  //     const isGood =
-  //       lowerText.includes("collect") ||
-  //       lowerText.includes("receive") ||
-  //       lowerText.includes("advance") ||
-  //       lowerText.includes("get out of jail") ||
-  //       lowerText.includes("matures") ||
-  //       lowerText.includes("refund") ||
-  //       lowerText.includes("prize") ||
-  //       lowerText.includes("inherit");
+    lastTopHistoryIdRef.current = topId;
+    if (!first?.comment) return;
 
-  //     const effectMatch = cardText.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
-  //     const effect = effectMatch ? effectMatch[0] : undefined;
+    const cardRegex = /drew\s+(chance|community\s+chest):\s*(.+)/i;
+    const match = first.comment.match(cardRegex);
+    if (!match || !match[2]) return;
 
-  //     setCardData({ type, text: cardText, effect, isGood });
-  //     setCardPlayerName(displayName);
-  //     setShowCardModal(true);
+    const [, typeStr, text] = match;
+    const cardText = text.replace(/\s*\[Rolled\s+\d+\].*$/i, "").trim();
+    if (!cardText) return;
 
-  //     // Extended timer to account for two-stage animation:
-  //     // Stage 1: "drew" message (7 seconds) + Stage 2: card content (8 seconds) = 15 seconds total
-  //     const timer = setTimeout(() => setShowCardModal(false), 15000);
-  //     return () => clearTimeout(timer);
-  //   }
-  // }, [game.history]);
+    const type = typeStr.toLowerCase().includes("chance") ? "chance" : "community";
+    const lowerText = cardText.toLowerCase();
+    const isGood =
+      lowerText.includes("collect") ||
+      lowerText.includes("receive") ||
+      lowerText.includes("advance") ||
+      lowerText.includes("get out of jail") ||
+      lowerText.includes("matures") ||
+      lowerText.includes("refund") ||
+      lowerText.includes("prize") ||
+      lowerText.includes("inherit");
+    const effectMatch = cardText.match(/([+-]?\$\d+)|go to jail|move to .+|get out of jail free/i);
+    const effect = effectMatch ? effectMatch[0] : undefined;
 
+    setCardData({ type, text: cardText, effect, isGood });
+    setCardPlayerName(String(first.player_name ?? "").trim() || "Player");
+    setShowCardModal(true);
+  }, [game.history]);
+
+  const aiPropertyDecisionKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isAITurn || !buyPrompted || !currentPlayer || !justLandedProperty || buyScore === null) return;
 
+    const key = `${currentPlayer.user_id}-${justLandedProperty.id}`;
+    if (aiPropertyDecisionKeyRef.current === key) return;
+    aiPropertyDecisionKeyRef.current = key;
+
     const timer = setTimeout(async () => {
-      const shouldBuy =
-        buyScore >= 72 &&
-        (currentPlayer.balance ?? 0) > justLandedProperty.price * 1.8;
+      const slot = getAiSlotFromPlayer(currentPlayer);
+      const groupIds = Object.values(MONOPOLY_STATS.colorGroups).find((ids) =>
+        ids.includes(justLandedProperty.id)
+      ) ?? [];
+      const ownedInGroup = groupIds.filter((id) =>
+        game_properties.some(
+          (gp) => gp.property_id === id && gp.address?.toLowerCase() === currentPlayer.address?.toLowerCase()
+        )
+      ).length;
+      const completesMonopoly = groupIds.length > 0 && ownedInGroup === groupIds.length - 1;
+      const landingRank = (MONOPOLY_STATS.landingRank as Record<number, number>)[justLandedProperty.id] ?? 99;
+
+      let shouldBuy: boolean;
+      try {
+        const agentRes = await apiClient.post<{
+          success?: boolean;
+          data?: { action?: string; reasoning?: string };
+          useBuiltIn?: boolean;
+        }>("/agent-registry/decision", {
+          gameId: game.id,
+          slot: slot ?? 2,
+          decisionType: "property",
+          context: {
+            myBalance: currentPlayer.balance ?? 0,
+            myProperties: game_properties
+              .filter((gp) => gp.address?.toLowerCase() === currentPlayer.address?.toLowerCase())
+              .map((gp) => ({
+                ...properties.find((p) => p.id === gp.property_id),
+                ...gp,
+              })),
+            opponents: (game.players ?? []).filter((p) => p.user_id !== currentPlayer.user_id),
+            landedProperty: {
+              ...justLandedProperty,
+              completesMonopoly,
+              landingRank,
+            },
+          },
+        });
+        if (
+          agentRes?.data?.success &&
+          agentRes.data.useBuiltIn === false &&
+          agentRes.data.data?.action
+        ) {
+          shouldBuy = agentRes.data.data.action.toLowerCase() === "buy";
+          if (agentRes.data.data.reasoning) {
+            showToast(
+              shouldBuy
+                ? `Claude: AI bought ${justLandedProperty.name} — ${agentRes.data.data.reasoning}`
+                : `Claude: AI passed on ${justLandedProperty.name} — ${agentRes.data.data.reasoning}`,
+              shouldBuy ? "success" : "default"
+            );
+          } else {
+            showToast(
+              shouldBuy ? `Claude: AI bought ${justLandedProperty.name}` : `Claude: AI passed on ${justLandedProperty.name}`,
+              shouldBuy ? "success" : "default"
+            );
+          }
+        } else {
+          shouldBuy =
+            buyScore >= 72 &&
+            (currentPlayer.balance ?? 0) > justLandedProperty.price * 1.8;
+          if (shouldBuy) {
+            showToast(`AI bought ${justLandedProperty.name} (score: ${buyScore}%)`, "success");
+          } else {
+            showToast(`AI passed on ${justLandedProperty.name} (score: ${buyScore}%)`, "default");
+          }
+        }
+      } catch (_) {
+        shouldBuy =
+          buyScore >= 72 &&
+          (currentPlayer.balance ?? 0) > justLandedProperty.price * 1.8;
+        if (shouldBuy) {
+          showToast(`AI bought ${justLandedProperty.name} (score: ${buyScore}%)`, "success");
+        } else {
+          showToast(`AI passed on ${justLandedProperty.name} (score: ${buyScore}%)`, "default");
+        }
+      }
 
       if (shouldBuy) {
-        showToast(`AI bought ${justLandedProperty.name} (score: ${buyScore}%)`, "success");
         await BUY_PROPERTY(true);
       } else {
-        showToast(`AI passed on ${justLandedProperty.name} (score: ${buyScore}%)`, "default");
         setTimeout(END_TURN, 900);
       }
     }, 900);
 
     return () => clearTimeout(timer);
-  }, [isAITurn, buyPrompted, currentPlayer, justLandedProperty, buyScore, BUY_PROPERTY, END_TURN, showToast]);
+  }, [
+    isAITurn,
+    buyPrompted,
+    currentPlayer,
+    justLandedProperty,
+    buyScore,
+    BUY_PROPERTY,
+    END_TURN,
+    showToast,
+    game.id,
+    game.players,
+    game_properties,
+    properties,
+  ]);
 
   useEffect(() => {
     if (actionLock || isRolling || buyPrompted || !roll) return;
@@ -1308,10 +1474,12 @@ const endTurnAfterSpecialMove = useCallback(() => {
   const hasCommunityChestJailCard = (me?.community_chest_jail_card ?? 0) >= 1;
 
   const handleRollDice = () => ROLL_DICE(false);
-  const handleBuyProperty = () => BUY_PROPERTY(false);
+  const handleBuyProperty = () => buyGuard.submit(() => BUY_PROPERTY(false));
   const handleSkipBuy = () => {
     setTurnEndScheduled(true);
     setBuyPrompted(false);
+    setAiTipText(null);
+    lastTipPropertyIdRef.current = null;
     landedPositionThisTurn.current = null;
     setTimeout(END_TURN, 900);
   };
@@ -1383,7 +1551,9 @@ const endTurnAfterSpecialMove = useCallback(() => {
               onBuyProperty={handleBuyProperty}
               onSkipBuy={handleSkipBuy}
               onDeclareBankruptcy={handleDeclareBankruptcy}
-              isPending={false}
+              isPending={endGamePending}
+              buyPending={buyGuard.isSubmitting}
+              jailSubmitting={jailGuard.isSubmitting}
               timerSlot={game?.duration && Number(game.duration) > 0 ? (
                 <GameDurationCountdown game={game} onTimeUp={handleGameTimeUp} />
               ) : null}
@@ -1393,15 +1563,19 @@ const endTurnAfterSpecialMove = useCallback(() => {
               canPayToLeaveJail={canPayToLeaveJail}
               hasChanceJailCard={hasChanceJailCard}
               hasCommunityChestJailCard={hasCommunityChestJailCard}
-              onPayToLeaveJail={handlePayToLeaveJail}
-              onUseGetOutOfJailFree={handleUseGetOutOfJailFree}
-              onStayInJail={handleStayInJail}
+              onPayToLeaveJail={() => jailGuard.submit(() => handlePayToLeaveJail())}
+              onUseGetOutOfJailFree={(cardType) => jailGuard.submit(() => handleUseGetOutOfJailFree(cardType))}
+              onStayInJail={() => jailGuard.submit(() => handleStayInJail())}
               turnEndScheduled={turnEndScheduled}
               isUntimed={isUntimed}
               endByNetWorthStatus={endByNetWorthStatus}
               endByNetWorthLoading={endByNetWorthLoading}
               onVoteEndByNetWorth={voteEndByNetWorth}
               me={me}
+              aiTipsOn={aiTipsOn}
+              onToggleAiTips={toggleAiTips}
+              aiTipText={aiTipText}
+              aiTipLoading={aiTipLoading}
             />
 
             {properties.map((square) => {
@@ -1484,12 +1658,12 @@ const endTurnAfterSpecialMove = useCallback(() => {
               )}
             </AnimatePresence>
 
-      {/* <CardModal
+      <CardModal
         isOpen={showCardModal}
         onClose={() => setShowCardModal(false)}
         card={cardData}
         playerName={cardPlayerName}
-      /> */}
+      />
 
       <BankruptcyModal
         isOpen={showBankruptcyModal}
